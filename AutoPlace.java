@@ -67,21 +67,21 @@ public class AutoPlace {
     public void onTick(TickEvent.ClientTickEvent e) {
         if (e.phase != TickEvent.Phase.END) return;
 
-        Minecraft mc = Minecraft.func_71410_x();
-        if (mc.field_71439_g == null || mc.field_71441_e == null) return;
-        EntityPlayerSP p = mc.field_71439_g;
+        Minecraft mc = Minecraft.getMinecraft();
+        if (mc.thePlayer == null || mc.theWorld == null) return;
+        EntityPlayerSP p = mc.thePlayer;
 
         tickCounter++;
-        if (Mouse.isButtonDown(1) || mc.field_71474_y.field_74313_G.func_151470_d()) {
+        if (Mouse.isButtonDown(1) || mc.gameSettings.keyBindUseItem.isKeyDown()) {
             lastRmbTick = tickCounter;
         }
 
-        if (TOGGLE.func_151468_f()) {
+        if (TOGGLE.isPressed()) {
             enabled = !enabled;
-            p.func_145747_a(new ChatComponentText("AutoPlace: " + (enabled ? "ON" : "OFF")));
+            p.addChatMessage(new ChatComponentText("AutoPlace: " + (enabled ? "ON" : "OFF")));
         }
 
-        if (!enabled || mc.field_71462_r != null) return;
+        if (!enabled || mc.currentScreen != null) return;
 
         // Only work while RMB is held / being spam clicked.
         if (tickCounter - lastRmbTick > RMB_GRACE_TICKS) return;
@@ -91,41 +91,41 @@ public class AutoPlace {
             return;
         }
 
-        ItemStack held = p.func_70694_bm();
-        if (held == null || !(held.func_77973_b() instanceof ItemBlock)) return;
+        ItemStack held = p.getHeldItem();
+        if (held == null || !(held.getItem() instanceof ItemBlock)) return;
 
         // Block position directly under the player's feet
         BlockPos below = new BlockPos(
-                p.field_70165_t,
-                p.func_174813_aQ().field_72338_b - 0.5,
-                p.field_70161_v);
+                p.posX,
+                p.getEntityBoundingBox().minY - 0.5,
+                p.posZ);
 
-        if (!mc.field_71441_e.func_175623_d(below)) return;
+        if (!mc.theWorld.isAirBlock(below)) return;
 
         // LATE gate: only place at the last tick of the jump (falling, about to land).
         // Never while standing/walking on the ground and never while still rising.
-        if (p.field_70122_E) return;
-        if (p.field_70181_x >= 0) return;
-        double nextFeetY = p.func_174813_aQ().field_72338_b + p.field_70181_x;
-        double blockTop = below.func_177956_o() + 1.0;
+        if (p.onGround) return;
+        if (p.motionY >= 0) return;
+        double nextFeetY = p.getEntityBoundingBox().minY + p.motionY;
+        double blockTop = below.getY() + 1.0;
         if (nextFeetY > blockTop + LATE_SLACK) return;
 
         // Find a solid neighbour block to place against
         for (EnumFacing dir : EnumFacing.values()) {
             if (dir == EnumFacing.UP) continue;
 
-            BlockPos neighbour = below.func_177972_a(dir);
-            Block b = mc.field_71441_e.func_180495_p(neighbour).func_177230_c();
-            if (!b.func_149688_o().func_76220_a()) continue;
+            BlockPos neighbour = below.offset(dir);
+            Block b = mc.theWorld.getBlockState(neighbour).getBlock();
+            if (!b.getMaterial().isSolid()) continue;
 
-            EnumFacing side = dir.func_176734_d();
+            EnumFacing side = dir.getOpposite();
             Vec3 hit = new Vec3(
-                    neighbour.func_177958_n() + 0.5 + side.func_82601_c() * 0.5,
-                    neighbour.func_177956_o() + 0.5 + side.func_96559_d() * 0.5,
-                    neighbour.func_177952_p() + 0.5 + side.func_82599_e() * 0.5);
+                    neighbour.getX() + 0.5 + side.getFrontOffsetX() * 0.5,
+                    neighbour.getY() + 0.5 + side.getFrontOffsetY() * 0.5,
+                    neighbour.getZ() + 0.5 + side.getFrontOffsetZ() * 0.5);
 
-            if (mc.field_71442_b.func_178890_a(p, mc.field_71441_e, held, neighbour, side, hit)) {
-                p.func_71038_i();
+            if (mc.playerController.onPlayerRightClick(p, mc.theWorld, held, neighbour, side, hit)) {
+                p.swingItem();
                 cooldown = 2 + rand.nextInt(3); // random delay 2-4 ticks
             }
             return;
@@ -133,3 +133,4 @@ public class AutoPlace {
     }
     }
 
+                                                       
