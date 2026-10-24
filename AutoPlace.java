@@ -23,17 +23,24 @@ import org.lwjgl.input.Mouse;
 import java.util.Random;
 
 /**
- * AutoPlace 1.5 - same behaviour as the original 1.0 (places the block under
- * your feet against a solid neighbour), but it only does that while the right
- * mouse button is held or being clicked. Toggle key: R.
+ * AutoPlace 1.6 - places the block under your feet against a solid neighbour only while
+ * the right mouse button is held or being clicked, and only at the LAST moment of the
+ * jump (just before landing), not right after takeoff. Toggle key: R.
  * Uses named MCP mappings (no func_/field_ names).
  */
-@Mod(modid = AutoPlace.MODID, version = "1.5", name = "AutoPlace", clientSideOnly = true, acceptedMinecraftVersions = "[1.8.9]")
+@Mod(modid = AutoPlace.MODID, version = "1.6", name = "AutoPlace", clientSideOnly = true, acceptedMinecraftVersions = "[1.8.9]")
 public class AutoPlace {
     public static final String MODID = "autoplace";
 
     /** RMB counts as active if held now or clicked within this many ticks (3 ticks = 150 ms, covers 10+ CPS). */
     private static final int RMB_GRACE_TICKS = 3;
+
+    /**
+     * "Late" placement: the block is placed only when you are falling and will reach the
+     * top of the target block on this tick or the next one. Raise this value to place
+     * a bit EARLIER, lower it (down to 0) to place even LATER.
+     */
+    private static final double LATE_SLACK = 0.15;
 
     private static final KeyBinding TOGGLE = new KeyBinding("Toggle AutoPlace", Keyboard.KEY_R, "AutoPlace");
     private final Random rand = new Random();
@@ -60,21 +67,21 @@ public class AutoPlace {
     public void onTick(TickEvent.ClientTickEvent e) {
         if (e.phase != TickEvent.Phase.END) return;
 
-        Minecraft mc = Minecraft.getMinecraft();
-        if (mc.thePlayer == null || mc.theWorld == null) return;
-        EntityPlayerSP p = mc.thePlayer;
+        Minecraft mc = Minecraft.func_71410_x();
+        if (mc.field_71439_g == null || mc.field_71441_e == null) return;
+        EntityPlayerSP p = mc.field_71439_g;
 
         tickCounter++;
-        if (Mouse.isButtonDown(1) || mc.gameSettings.keyBindUseItem.isKeyDown()) {
+        if (Mouse.isButtonDown(1) || mc.field_71474_y.field_74313_G.func_151470_d()) {
             lastRmbTick = tickCounter;
         }
 
-        if (TOGGLE.isPressed()) {
+        if (TOGGLE.func_151468_f()) {
             enabled = !enabled;
-            p.addChatMessage(new ChatComponentText("AutoPlace: " + (enabled ? "ON" : "OFF")));
+            p.func_145747_a(new ChatComponentText("AutoPlace: " + (enabled ? "ON" : "OFF")));
         }
 
-        if (!enabled || mc.currentScreen != null) return;
+        if (!enabled || mc.field_71462_r != null) return;
 
         // Only work while RMB is held / being spam clicked.
         if (tickCounter - lastRmbTick > RMB_GRACE_TICKS) return;
@@ -84,37 +91,45 @@ public class AutoPlace {
             return;
         }
 
-        ItemStack held = p.getHeldItem();
-        if (held == null || !(held.getItem() instanceof ItemBlock)) return;
+        ItemStack held = p.func_70694_bm();
+        if (held == null || !(held.func_77973_b() instanceof ItemBlock)) return;
 
         // Block position directly under the player's feet
         BlockPos below = new BlockPos(
-                p.posX,
-                p.getEntityBoundingBox().minY - 0.5,
-                p.posZ);
+                p.field_70165_t,
+                p.func_174813_aQ().field_72338_b - 0.5,
+                p.field_70161_v);
 
-        if (!mc.theWorld.isAirBlock(below)) return;
+        if (!mc.field_71441_e.func_175623_d(below)) return;
+
+        // LATE gate: only place at the last tick of the jump (falling, about to land).
+        // Never while standing/walking on the ground and never while still rising.
+        if (p.field_70122_E) return;
+        if (p.field_70181_x >= 0) return;
+        double nextFeetY = p.func_174813_aQ().field_72338_b + p.field_70181_x;
+        double blockTop = below.func_177956_o() + 1.0;
+        if (nextFeetY > blockTop + LATE_SLACK) return;
 
         // Find a solid neighbour block to place against
         for (EnumFacing dir : EnumFacing.values()) {
             if (dir == EnumFacing.UP) continue;
 
-            BlockPos neighbour = below.offset(dir);
-            Block b = mc.theWorld.getBlockState(neighbour).getBlock();
-            if (!b.getMaterial().isSolid()) continue;
+            BlockPos neighbour = below.func_177972_a(dir);
+            Block b = mc.field_71441_e.func_180495_p(neighbour).func_177230_c();
+            if (!b.func_149688_o().func_76220_a()) continue;
 
-            EnumFacing side = dir.getOpposite();
+            EnumFacing side = dir.func_176734_d();
             Vec3 hit = new Vec3(
-                    neighbour.getX() + 0.5 + side.getFrontOffsetX() * 0.5,
-                    neighbour.getY() + 0.5 + side.getFrontOffsetY() * 0.5,
-                    neighbour.getZ() + 0.5 + side.getFrontOffsetZ() * 0.5);
+                    neighbour.func_177958_n() + 0.5 + side.func_82601_c() * 0.5,
+                    neighbour.func_177956_o() + 0.5 + side.func_96559_d() * 0.5,
+                    neighbour.func_177952_p() + 0.5 + side.func_82599_e() * 0.5);
 
-            if (mc.playerController.onPlayerRightClick(p, mc.theWorld, held, neighbour, side, hit)) {
-                p.swingItem();
+            if (mc.field_71442_b.func_178890_a(p, mc.field_71441_e, held, neighbour, side, hit)) {
+                p.func_71038_i();
                 cooldown = 2 + rand.nextInt(3); // random delay 2-4 ticks
             }
             return;
         }
     }
     }
-    
+
