@@ -28,7 +28,7 @@ import java.util.Random;
  * jump (just before landing), not right after takeoff. Toggle key: R.
  * Uses named MCP mappings (no func_/field_ names).
  */
-@Mod(modid = AutoPlace.MODID, version = "1.6", name = "AutoPlace", clientSideOnly = true, acceptedMinecraftVersions = "[1.8.9]")
+@Mod(modid = AutoPlace.MODID, version = "1.7", name = "AutoPlace", clientSideOnly = true, acceptedMinecraftVersions = "[1.8.9]")
 public class AutoPlace {
     public static final String MODID = "autoplace";
 
@@ -40,7 +40,13 @@ public class AutoPlace {
      * top of the target block on this tick or the next one. Raise this value to place
      * a bit EARLIER, lower it (down to 0) to place even LATER.
      */
-    private static final double LATE_SLACK = 0.15;
+    private static final double LATE_SLACK = 0.05;
+
+    /** How many ticks ahead the target block is aimed (0 = under you now, 1 = under where you will be next tick). */
+    private static final double LOOKAHEAD_TICKS = 1.0;
+
+    /** Height of the ground (feet Y) you last stood on. The new block goes at THIS level, not higher. */
+    private double lastGroundY = Double.NaN;
 
     private static final KeyBinding TOGGLE = new KeyBinding("Toggle AutoPlace", Keyboard.KEY_R, "AutoPlace");
     private final Random rand = new Random();
@@ -72,6 +78,9 @@ public class AutoPlace {
         EntityPlayerSP p = mc.thePlayer;
 
         tickCounter++;
+        if (p.onGround) {
+            lastGroundY = p.getEntityBoundingBox().minY;
+        }
         if (Mouse.isButtonDown(1) || mc.gameSettings.keyBindUseItem.isKeyDown()) {
             lastRmbTick = tickCounter;
         }
@@ -94,21 +103,23 @@ public class AutoPlace {
         ItemStack held = p.getHeldItem();
         if (held == null || !(held.getItem() instanceof ItemBlock)) return;
 
-        // Block position directly under the player's feet
+        if (Double.isNaN(lastGroundY)) return;
+        if (p.onGround) return;      // standing / walking: never place
+        if (p.motionY >= 0) return;  // still rising: never place
+
+        // LAST-TICK gate: place only when the next tick would take your feet down to the
+        // ground level you jumped from (i.e. you are about to land).
+        double nextFeetY = p.getEntityBoundingBox().minY + p.motionY;
+        if (nextFeetY > lastGroundY + LATE_SLACK) return;
+
+        // Target block: at the level of the ground you jumped from, under the spot you are
+        // about to land on (not under where you were mid-air earlier in the jump).
         BlockPos below = new BlockPos(
-                p.posX,
-                p.getEntityBoundingBox().minY - 0.5,
-                p.posZ);
+                p.posX + p.motionX * LOOKAHEAD_TICKS,
+                lastGroundY - 0.5,
+                p.posZ + p.motionZ * LOOKAHEAD_TICKS);
 
         if (!mc.theWorld.isAirBlock(below)) return;
-
-        // LATE gate: only place at the last tick of the jump (falling, about to land).
-        // Never while standing/walking on the ground and never while still rising.
-        if (p.onGround) return;
-        if (p.motionY >= 0) return;
-        double nextFeetY = p.getEntityBoundingBox().minY + p.motionY;
-        double blockTop = below.getY() + 1.0;
-        if (nextFeetY > blockTop + LATE_SLACK) return;
 
         // Find a solid neighbour block to place against
         for (EnumFacing dir : EnumFacing.values()) {
@@ -133,4 +144,4 @@ public class AutoPlace {
     }
     }
 
-                                                       
+                
