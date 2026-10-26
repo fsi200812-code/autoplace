@@ -1,3 +1,4 @@
+
 package com.example.autoplace;
 
 import net.minecraft.block.Block;
@@ -20,64 +21,79 @@ import net.minecraftforge.fml.common.gameevent.TickEvent;
 import org.lwjgl.input.Keyboard;
 import org.lwjgl.input.Mouse;
 
-import java.util.Random;
-
-/**
- * AutoPlace 1.5 - same behaviour as the original 1.0 (places the block under
- * your feet against a solid neighbour), but it only does that while the right
- * mouse button is held or being clicked. Toggle key: R.
- * Uses named MCP mappings (no func_/field_ names).
- */
-@Mod(modid = AutoPlace.MODID, version = "1.5", name = "AutoPlace", clientSideOnly = true, acceptedMinecraftVersions = "[1.8.9]")
+@Mod(
+    modid = AutoPlace.MODID,
+    version = "1.7",
+    name = "AutoPlace",
+    clientSideOnly = true,
+    acceptedMinecraftVersions = "[1.8.9]"
+)
 public class AutoPlace {
     public static final String MODID = "autoplace";
 
-    /** RMB counts as active if held now or clicked within this many ticks (3 ticks = 150 ms, covers 10+ CPS). */
+    private static final int MAX_BLOCKS = 5;
     private static final int RMB_GRACE_TICKS = 3;
 
-    private static final KeyBinding TOGGLE = new KeyBinding("Toggle AutoPlace", Keyboard.KEY_R, "AutoPlace");
-    private final Random rand = new Random();
+    private static final KeyBinding TOGGLE =
+        new KeyBinding("Toggle AutoPlace", Keyboard.KEY_R, "AutoPlace");
+
     private boolean enabled = false;
-    private int cooldown = 0;
     private int tickCounter = 0;
     private int lastRmbTick = -1000;
+    private int placedCount = 0;
+    private int cooldown = 0;
+    private boolean wasActive = false;
 
     @Mod.EventHandler
-    public void init(FMLInitializationEvent e) {
+    public void init(FMLInitializationEvent event) {
         ClientRegistry.registerKeyBinding(TOGGLE);
         MinecraftForge.EVENT_BUS.register(this);
     }
 
-    /** Catches every physical right click, even very short ones that fall between ticks. */
     @SubscribeEvent
-    public void onMouse(MouseEvent e) {
-        if (e.button == 1 && e.buttonstate) {
+    public void onMouse(MouseEvent event) {
+        if (event.button == 1 && event.buttonstate) {
             lastRmbTick = tickCounter;
         }
     }
 
     @SubscribeEvent
-    public void onTick(TickEvent.ClientTickEvent e) {
-        if (e.phase != TickEvent.Phase.END) return;
+    public void onTick(TickEvent.ClientTickEvent event) {
+        if (event.phase != TickEvent.Phase.END) return;
 
         Minecraft mc = Minecraft.getMinecraft();
-        if (mc.thePlayer == null || mc.theWorld == null) return;
-        EntityPlayerSP p = mc.thePlayer;
 
+        if (mc.thePlayer == null || mc.theWorld == null) return;
+
+        EntityPlayerSP p = mc.thePlayer;
         tickCounter++;
-        if (Mouse.isButtonDown(1) || mc.gameSettings.keyBindUseItem.isKeyDown()) {
+
+        boolean rmb = Mouse.isButtonDown(1)
+                || mc.gameSettings.keyBindUseItem.isKeyDown();
+
+        if (rmb) {
             lastRmbTick = tickCounter;
+        } else {
+            placedCount = 0;
+            wasActive = false;
         }
 
         if (TOGGLE.isPressed()) {
             enabled = !enabled;
-            p.addChatMessage(new ChatComponentText("AutoPlace: " + (enabled ? "ON" : "OFF")));
+            p.addChatMessage(new ChatComponentText(
+                "AutoPlace: " + (enabled ? "ON" : "OFF")
+            ));
         }
 
         if (!enabled || mc.currentScreen != null) return;
 
-        // Only work while RMB is held / being spam clicked.
+        if (rmb && !wasActive) {
+            placedCount = 0;
+        }
+        wasActive = rmb;
+
         if (tickCounter - lastRmbTick > RMB_GRACE_TICKS) return;
+        if (placedCount >= MAX_BLOCKS) return;
 
         if (cooldown > 0) {
             cooldown--;
@@ -87,33 +103,64 @@ public class AutoPlace {
         ItemStack held = p.getHeldItem();
         if (held == null || !(held.getItem() instanceof ItemBlock)) return;
 
-        // Block position directly under the player's feet
-        BlockPos below = new BlockPos(
-                p.posX,
-                p.getEntityBoundingBox().minY - 0.5,
-                p.posZ);
+        // Target block directly below the player's feet.
+        int y = (int) Math.floor(p.getEntityBoundingBox().minY) - 1;
 
-        if (!mc.theWorld.isAirBlock(below)) return;
+        BlockPos target = new BlockPos(p.posX, y, p.posZ);
 
-        // Find a solid neighbour block to place against
+        // If occupied, try one block ahead using current movement direction.
+        if (!mc.theWorld.isAirBlock(target)) {
+            double dx = p.motionX;
+            double dz = p.motionZ;
+            double length = Math.sqrt(dx * dx + dz * dz);
+
+            if (length < 0.01) {
+                double yaw = Math.toRadians(p.rotationYaw);
+                dx = -Math.sin(yaw);
+                dz = Math.cos(yaw);
+            } else {
+                dx /= length;
+                dz /= length;
+            }
+
+            target = new BlockPos(
+                p.posX + dx * 0.8,
+                y,
+                p.posZ + dz * 0.8
+            );
+        }
+
+        if (!mc.theWorld.isAirBlock(target)) return;
+
+        // Find a solid neighbouring block.
         for (EnumFacing dir : EnumFacing.values()) {
-            if (dir == EnumFacing.UP) continue;
+            BlockPos neighbour = target.offset(dir);
+            Block block = mc.theWorld
+                .getBlockState(neighbour)
+                .getBlock();
 
-            BlockPos neighbour = below.offset(dir);
-            Block b = mc.theWorld.getBlockState(neighbour).getBlock();
-            if (!b.getMaterial().isSolid()) continue;
+            if (!block.getMaterial().isSolid()) continue;
 
             EnumFacing side = dir.getOpposite();
-            Vec3 hit = new Vec3(
-                    neighbour.getX() + 0.5 + side.getFrontOffsetX() * 0.5,
-                    neighbour.getY() + 0.5 + side.getFrontOffsetY() * 0.5,
-                    neighbour.getZ() + 0.5 + side.getFrontOffsetZ() * 0.5);
 
-            if (mc.playerController.onPlayerRightClick(p, mc.theWorld, held, neighbour, side, hit)) {
+            Vec3 hit = new Vec3(
+                neighbour.getX() + 0.5
+                    + side.getFrontOffsetX() * 0.5,
+                neighbour.getY() + 0.5
+                    + side.getFrontOffsetY() * 0.5,
+                neighbour.getZ() + 0.5
+                    + side.getFrontOffsetZ() * 0.5
+            );
+
+            if (mc.playerController.onPlayerRightClick(
+                    p, mc.theWorld, held, neighbour, side, hit)) {
                 p.swingItem();
-                cooldown = 2 + rand.nextInt(3); // random delay 2-4 ticks
+                placedCount++;
+                cooldown = 0;
             }
+
             return;
         }
     }
-                                                       }
+    }
+            
