@@ -333,5 +333,5 @@ public class AutoPlace {
         }
         return mc.playerController.onPlayerRightClick(p, mc.theWorld, held, pos, face, hit);
     }
-                }
-            
+            }
+        
