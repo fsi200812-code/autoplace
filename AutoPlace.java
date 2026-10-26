@@ -23,12 +23,16 @@ import org.lwjgl.input.Mouse;
 import java.util.Random;
 
 /**
- * AutoPlace 1.6 - places the block under your feet against a solid neighbour only while
+ * AutoPlace 1.8 - adds STAIR PATTERN mode (key G): while RMB is held the mod builds the
+ * speed-telly staircase for you: up, forward, forward, up, forward (then repeats on the next
+ * jump). You only jump, steer and turn; the mod does the placing. With pattern mode off it
+ * works as the old single-block mod (1.6 behaviour below). Toggle key: R.
+ * Older: AutoPlace 1.6 - places the block under your feet against a solid neighbour only while
  * the right mouse button is held or being clicked, and only at the LAST moment of the
  * jump (just before landing), not right after takeoff. Toggle key: R.
  * Uses named MCP mappings (no func_/field_ names).
  */
-@Mod(modid = AutoPlace.MODID, version = "1.7", name = "AutoPlace", clientSideOnly = true, acceptedMinecraftVersions = "[1.8.9]")
+@Mod(modid = AutoPlace.MODID, version = "1.8", name = "AutoPlace", clientSideOnly = true, acceptedMinecraftVersions = "[1.8.9]")
 public class AutoPlace {
     public static final String MODID = "autoplace";
 
@@ -49,6 +53,22 @@ public class AutoPlace {
     private double lastGroundY = Double.NaN;
 
     private static final KeyBinding TOGGLE = new KeyBinding("Toggle AutoPlace", Keyboard.KEY_R, "AutoPlace");
+    private static final KeyBinding PATTERN_TOGGLE = new KeyBinding("Toggle stair pattern mode", Keyboard.KEY_G, "AutoPlace");
+
+    /** Stair pattern: 0 = block on TOP of the previous one, 1 = block FORWARD (side of the previous one). */
+    private static final int[] PATTERN = {0, 1, 1, 0, 1};
+    /** Max distance from your eyes to the face the mod places against (vanilla survival reach is about 4.5). */
+    private static final double REACH = 4.5;
+    /** Delay between pattern blocks in ticks: PATTERN_DELAY_MIN + random(0..PATTERN_DELAY_RANGE-1). */
+    private static final int PATTERN_DELAY_MIN = 1;
+    private static final int PATTERN_DELAY_RANGE = 2;
+
+    private boolean patternMode = true;
+    private int patIdx = 0;
+    private boolean patDone = false;
+    private BlockPos patTip = null;
+    private EnumFacing patDir = EnumFacing.NORTH;
+
     private final Random rand = new Random();
     private boolean enabled = false;
     private int cooldown = 0;
@@ -58,6 +78,7 @@ public class AutoPlace {
     @Mod.EventHandler
     public void init(FMLInitializationEvent e) {
         ClientRegistry.registerKeyBinding(TOGGLE);
+        ClientRegistry.registerKeyBinding(PATTERN_TOGGLE);
         MinecraftForge.EVENT_BUS.register(this);
     }
 
@@ -90,7 +111,18 @@ public class AutoPlace {
             p.addChatMessage(new ChatComponentText("AutoPlace: " + (enabled ? "ON" : "OFF")));
         }
 
+        if (PATTERN_TOGGLE.isPressed()) {
+            patternMode = !patternMode;
+            resetPattern();
+            p.addChatMessage(new ChatComponentText("AutoPlace stair pattern: " + (patternMode ? "ON" : "OFF")));
+        }
+
         if (!enabled || mc.currentScreen != null) return;
+
+        // RMB released and standing on the ground: forget the unfinished pattern.
+        if (tickCounter - lastRmbTick > RMB_GRACE_TICKS && p.onGround) {
+            resetPattern();
+        }
 
         // Only work while RMB is held / being spam clicked.
         if (tickCounter - lastRmbTick > RMB_GRACE_TICKS) return;
@@ -102,6 +134,11 @@ public class AutoPlace {
 
         ItemStack held = p.getHeldItem();
         if (held == null || !(held.getItem() instanceof ItemBlock)) return;
+
+        if (patternMode) {
+            patternTick(mc, p, held);
+            return;
+        }
 
         if (Double.isNaN(lastGroundY)) return;
         if (p.onGround) return;      // standing / walking: never place
@@ -142,6 +179,71 @@ public class AutoPlace {
             return;
         }
     }
+
+    private void resetPattern() {
+        patIdx = 0;
+        patDone = false;
+        patTip = null;
     }
 
-                
+    /** One tick of the stair pattern: places the next block of PATTERN if it is possible right now. */
+    private void patternTick(Minecraft mc, EntityPlayerSP p, ItemStack held) {
+        if (patDone) {
+            if (p.onGround) resetPattern(); // pattern finished: wait until you land, then be ready again
+            return;
+        }
+
+        if (patTip == null) {
+            // Start of a cycle: begins once you are in the air, from the block you jumped off.
+            if (p.onGround || Double.isNaN(lastGroundY)) return;
+            BlockPos start = new BlockPos(p.posX, lastGroundY - 0.5, p.posZ);
+            if (!mc.theWorld.getBlockState(start).getBlock().getMaterial().isSolid()) return;
+            patTip = start;
+            patIdx = 0;
+
+            // "Forward" = the direction you are moving, snapped to north/south/east/west.
+            double mx = p.motionX;
+            double mz = p.motionZ;
+            if (Math.abs(mx) + Math.abs(mz) > 0.05) {
+                if (Math.abs(mx) > Math.abs(mz)) {
+                    patDir = mx > 0 ? EnumFacing.EAST : EnumFacing.WEST;
+                } else {
+                    patDir = mz > 0 ? EnumFacing.SOUTH : EnumFacing.NORTH;
+                }
+            }
+        }
+
+        EnumFacing face = PATTERN[patIdx] == 0 ? EnumFacing.UP : patDir;
+        BlockPos target = patTip.offset(face);
+
+        // Spot already filled: count the step as done and move on from that block.
+        if (!mc.theWorld.isAirBlock(target)) {
+            advancePattern(target);
+            return;
+        }
+
+        Vec3 hit = new Vec3(
+                patTip.getX() + 0.5 + face.getFrontOffsetX() * 0.5,
+                patTip.getY() + 0.5 + face.getFrontOffsetY() * 0.5,
+                patTip.getZ() + 0.5 + face.getFrontOffsetZ() * 0.5);
+        Vec3 eye = new Vec3(p.posX, p.posY + p.getEyeHeight(), p.posZ);
+        if (eye.distanceTo(hit) > REACH) return;
+
+        // If the block cannot be placed yet (for example you are still inside that spot while
+        // rising), this returns false and the mod simply tries again next tick.
+        if (mc.playerController.onPlayerRightClick(p, mc.theWorld, held, patTip, face, hit)) {
+            p.swingItem();
+            cooldown = PATTERN_DELAY_MIN + rand.nextInt(PATTERN_DELAY_RANGE);
+            advancePattern(target);
+        }
+    }
+
+    private void advancePattern(BlockPos placed) {
+        patTip = placed;
+        patIdx++;
+        if (patIdx >= PATTERN.length) {
+            patDone = true;
+        }
+    }
+    }
+        
