@@ -23,7 +23,7 @@ import org.lwjgl.input.Mouse;
 
 @Mod(
     modid = AutoPlace.MODID,
-    version = "1.7",
+    version = "1.6",
     name = "AutoPlace",
     clientSideOnly = true,
     acceptedMinecraftVersions = "[1.8.9]"
@@ -31,18 +31,13 @@ import org.lwjgl.input.Mouse;
 public class AutoPlace {
     public static final String MODID = "autoplace";
 
-    private static final int MAX_BLOCKS = 5;
-    private static final int RMB_GRACE_TICKS = 3;
-
     private static final KeyBinding TOGGLE =
         new KeyBinding("Toggle AutoPlace", Keyboard.KEY_R, "AutoPlace");
 
     private boolean enabled = false;
     private int tickCounter = 0;
     private int lastRmbTick = -1000;
-    private int placedCount = 0;
     private int cooldown = 0;
-    private boolean wasActive = false;
 
     @Mod.EventHandler
     public void init(FMLInitializationEvent event) {
@@ -68,14 +63,9 @@ public class AutoPlace {
         EntityPlayerSP p = mc.thePlayer;
         tickCounter++;
 
-        boolean rmb = Mouse.isButtonDown(1)
-                || mc.gameSettings.keyBindUseItem.isKeyDown();
-
-        if (rmb) {
+        if (Mouse.isButtonDown(1)
+                || mc.gameSettings.keyBindUseItem.isKeyDown()) {
             lastRmbTick = tickCounter;
-        } else {
-            placedCount = 0;
-            wasActive = false;
         }
 
         if (TOGGLE.isPressed()) {
@@ -86,14 +76,7 @@ public class AutoPlace {
         }
 
         if (!enabled || mc.currentScreen != null) return;
-
-        if (rmb && !wasActive) {
-            placedCount = 0;
-        }
-        wasActive = rmb;
-
-        if (tickCounter - lastRmbTick > RMB_GRACE_TICKS) return;
-        if (placedCount >= MAX_BLOCKS) return;
+        if (tickCounter - lastRmbTick > 3) return;
 
         if (cooldown > 0) {
             cooldown--;
@@ -103,36 +86,38 @@ public class AutoPlace {
         ItemStack held = p.getHeldItem();
         if (held == null || !(held.getItem() instanceof ItemBlock)) return;
 
-        // Target block directly below the player's feet.
+        // Block level directly below the player's feet.
         int y = (int) Math.floor(p.getEntityBoundingBox().minY) - 1;
 
         BlockPos target = new BlockPos(p.posX, y, p.posZ);
 
-        // If occupied, try one block ahead using current movement direction.
+        // If the block below is occupied, check one block ahead.
         if (!mc.theWorld.isAirBlock(target)) {
-            double dx = p.motionX;
-            double dz = p.motionZ;
-            double length = Math.sqrt(dx * dx + dz * dz);
+            double mx = p.motionX;
+            double mz = p.motionZ;
 
+            double length = Math.sqrt(mx * mx + mz * mz);
+
+            // Use movement direction; fall back to view direction.
             if (length < 0.01) {
                 double yaw = Math.toRadians(p.rotationYaw);
-                dx = -Math.sin(yaw);
-                dz = Math.cos(yaw);
+                mx = -Math.sin(yaw);
+                mz = Math.cos(yaw);
             } else {
-                dx /= length;
-                dz /= length;
+                mx /= length;
+                mz /= length;
             }
 
             target = new BlockPos(
-                p.posX + dx * 0.8,
+                p.posX + mx * 0.8,
                 y,
-                p.posZ + dz * 0.8
+                p.posZ + mz * 0.8
             );
         }
 
         if (!mc.theWorld.isAirBlock(target)) return;
 
-        // Find a solid neighbouring block.
+        // Find a solid neighbour and use its exposed face.
         for (EnumFacing dir : EnumFacing.values()) {
             BlockPos neighbour = target.offset(dir);
             Block block = mc.theWorld
@@ -155,8 +140,9 @@ public class AutoPlace {
             if (mc.playerController.onPlayerRightClick(
                     p, mc.theWorld, held, neighbour, side, hit)) {
                 p.swingItem();
-                placedCount++;
-                cooldown = 0;
+
+                // Short fixed cooldown instead of random delay.
+                cooldown = 1;
             }
 
             return;
