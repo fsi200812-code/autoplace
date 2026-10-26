@@ -5,6 +5,7 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.entity.EntityPlayerSP;
 import net.minecraft.client.settings.KeyBinding;
 import net.minecraft.item.ItemBlock;
+import net.minecraft.network.play.client.C03PacketPlayer;
 import net.minecraft.item.ItemStack;
 import net.minecraft.util.BlockPos;
 import net.minecraft.util.ChatComponentText;
@@ -32,7 +33,7 @@ import java.util.Random;
  * jump (just before landing), not right after takeoff. Toggle key: R.
  * Uses named MCP mappings (no func_/field_ names).
  */
-@Mod(modid = AutoPlace.MODID, version = "1.8", name = "AutoPlace", clientSideOnly = true, acceptedMinecraftVersions = "[1.8.9]")
+@Mod(modid = AutoPlace.MODID, version = "2.0", name = "AutoPlace", clientSideOnly = true, acceptedMinecraftVersions = "[1.8.9]")
 public class AutoPlace {
     public static final String MODID = "autoplace";
 
@@ -60,8 +61,19 @@ public class AutoPlace {
     /** Max distance from your eyes to the face the mod places against (vanilla survival reach is about 4.5). */
     private static final double REACH = 4.5;
     /** Delay between pattern blocks in ticks: PATTERN_DELAY_MIN + random(0..PATTERN_DELAY_RANGE-1). */
-    private static final int PATTERN_DELAY_MIN = 1;
-    private static final int PATTERN_DELAY_RANGE = 2;
+    private static final int PATTERN_DELAY_MIN = 0;
+    private static final int PATTERN_DELAY_RANGE = 1;
+    /** How many pattern blocks may be placed within ONE tick (2 = fast, 1 = safer). */
+    private static final int MAX_BLOCKS_PER_TICK = 2;
+    /** true = the staircase keeps building without waiting for you to land (needed for 6-7 blocks/s). */
+    private static final boolean CONTINUOUS = true;
+
+    /**
+     * true = before every placement the mod sends the server a look packet aimed exactly at
+     * the face it places against, so the block is placed even when your crosshair is NOT on
+     * it. Your own camera is not moved (the server sees the aim, you do not).
+     */
+    private static final boolean AIM_AT_FACE = true;
 
     private boolean patternMode = true;
     private int patIdx = 0;
@@ -172,12 +184,26 @@ public class AutoPlace {
                     neighbour.getY() + 0.5 + side.getFrontOffsetY() * 0.5,
                     neighbour.getZ() + 0.5 + side.getFrontOffsetZ() * 0.5);
 
-            if (mc.playerController.onPlayerRightClick(p, mc.theWorld, held, neighbour, side, hit)) {
+            if (placeAimed(mc, p, held, neighbour, side, hit)) {
                 p.swingItem();
                 cooldown = 2 + rand.nextInt(3); // random delay 2-4 ticks
             }
             return;
         }
+    }
+
+    /** Right-click on a block face, first telling the server we are looking at that exact spot. */
+    private boolean placeAimed(Minecraft mc, EntityPlayerSP p, ItemStack held, BlockPos pos, EnumFacing face, Vec3 hit) {
+        if (AIM_AT_FACE) {
+            double dx = hit.xCoord - p.posX;
+            double dy = hit.yCoord - (p.posY + p.getEyeHeight());
+            double dz = hit.zCoord - p.posZ;
+            double flat = Math.sqrt(dx * dx + dz * dz);
+            float yaw = (float) (Math.toDegrees(Math.atan2(dz, dx)) - 90.0);
+            float pitch = (float) (-Math.toDegrees(Math.atan2(dy, flat)));
+            p.sendQueue.addToSendQueue(new C03PacketPlayer.C05PacketPlayerLook(yaw, pitch, p.onGround));
+        }
+        return mc.playerController.onPlayerRightClick(p, mc.theWorld, held, pos, face, hit);
     }
 
     private void resetPattern() {
@@ -186,31 +212,45 @@ public class AutoPlace {
         patTip = null;
     }
 
-    /** One tick of the stair pattern: places the next block of PATTERN if it is possible right now. */
+    /** One tick of the stair pattern: places up to MAX_BLOCKS_PER_TICK blocks. */
     private void patternTick(Minecraft mc, EntityPlayerSP p, ItemStack held) {
+        for (int i = 0; i < MAX_BLOCKS_PER_TICK; i++) {
+            if (!patternStep(mc, p, held)) break;
+            ItemStack now = p.getHeldItem();
+            if (now == null || !(now.getItem() instanceof ItemBlock)) break;
+            held = now;
+        }
+    }
+
+    /** "Forward" = the direction you are moving, snapped to north/south/east/west. */
+    private void updateDirection(EntityPlayerSP p) {
+        double mx = p.motionX;
+        double mz = p.motionZ;
+        if (Math.abs(mx) + Math.abs(mz) > 0.05) {
+            if (Math.abs(mx) > Math.abs(mz)) {
+                patDir = mx > 0 ? EnumFacing.EAST : EnumFacing.WEST;
+            } else {
+                patDir = mz > 0 ? EnumFacing.SOUTH : EnumFacing.NORTH;
+            }
+        }
+    }
+
+    /** Tries to place the next block of PATTERN; true if a block was placed (or a filled spot skipped). */
+    private boolean patternStep(Minecraft mc, EntityPlayerSP p, ItemStack held) {
         if (patDone) {
             if (p.onGround) resetPattern(); // pattern finished: wait until you land, then be ready again
-            return;
+            return false;
         }
 
         if (patTip == null) {
             // Start of a cycle: begins once you are in the air, from the block you jumped off.
-            if (p.onGround || Double.isNaN(lastGroundY)) return;
+            if (p.onGround || Double.isNaN(lastGroundY)) return false;
             BlockPos start = new BlockPos(p.posX, lastGroundY - 0.5, p.posZ);
-            if (!mc.theWorld.getBlockState(start).getBlock().getMaterial().isSolid()) return;
+            if (!mc.theWorld.getBlockState(start).getBlock().getMaterial().isSolid()) return false;
             patTip = start;
             patIdx = 0;
 
-            // "Forward" = the direction you are moving, snapped to north/south/east/west.
-            double mx = p.motionX;
-            double mz = p.motionZ;
-            if (Math.abs(mx) + Math.abs(mz) > 0.05) {
-                if (Math.abs(mx) > Math.abs(mz)) {
-                    patDir = mx > 0 ? EnumFacing.EAST : EnumFacing.WEST;
-                } else {
-                    patDir = mz > 0 ? EnumFacing.SOUTH : EnumFacing.NORTH;
-                }
-            }
+            updateDirection(p);
         }
 
         EnumFacing face = PATTERN[patIdx] == 0 ? EnumFacing.UP : patDir;
@@ -218,8 +258,8 @@ public class AutoPlace {
 
         // Spot already filled: count the step as done and move on from that block.
         if (!mc.theWorld.isAirBlock(target)) {
-            advancePattern(target);
-            return;
+            advancePattern(p, target);
+            return true;
         }
 
         Vec3 hit = new Vec3(
@@ -227,23 +267,30 @@ public class AutoPlace {
                 patTip.getY() + 0.5 + face.getFrontOffsetY() * 0.5,
                 patTip.getZ() + 0.5 + face.getFrontOffsetZ() * 0.5);
         Vec3 eye = new Vec3(p.posX, p.posY + p.getEyeHeight(), p.posZ);
-        if (eye.distanceTo(hit) > REACH) return;
+        if (eye.distanceTo(hit) > REACH) return false;
 
         // If the block cannot be placed yet (for example you are still inside that spot while
         // rising), this returns false and the mod simply tries again next tick.
-        if (mc.playerController.onPlayerRightClick(p, mc.theWorld, held, patTip, face, hit)) {
+        if (placeAimed(mc, p, held, patTip, face, hit)) {
             p.swingItem();
             cooldown = PATTERN_DELAY_MIN + rand.nextInt(PATTERN_DELAY_RANGE);
-            advancePattern(target);
+            advancePattern(p, target);
+            return true;
         }
+        return false;
     }
 
-    private void advancePattern(BlockPos placed) {
+    private void advancePattern(EntityPlayerSP p, BlockPos placed) {
         patTip = placed;
         patIdx++;
         if (patIdx >= PATTERN.length) {
-            patDone = true;
+            if (CONTINUOUS) {
+                patIdx = 0;          // start the next cycle right away from the last block
+                updateDirection(p);  // so a turn you made is picked up here
+            } else {
+                patDone = true;
+            }
         }
     }
     }
-        
+    
