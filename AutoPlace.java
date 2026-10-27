@@ -6,19 +6,19 @@ import net.minecraft.client.settings.KeyBinding;
 import net.minecraft.item.ItemBlock;
 import net.minecraft.util.BlockPos;
 import net.minecraft.util.EnumFacing;
-import net.minecraft.util.MovingObjectPosition;
-import net.minecraftforge.client.event.MouseEvent;
+import net.minecraft.util.Vec3;
+import net.minecraftforge.client.settings.KeyConflictContext;
+import net.minecraftforge.common.MinecraftForge;
+import net.minecraftforge.fml.client.registry.ClientRegistry;
 import net.minecraftforge.fml.common.Mod;
 import net.minecraftforge.fml.common.eventhandler.SubscribeEvent;
 import net.minecraftforge.fml.common.gameevent.InputEvent;
 import net.minecraftforge.fml.common.gameevent.TickEvent;
-import net.minecraftforge.fml.client.registry.ClientRegistry;
-import net.minecraftforge.common.MinecraftForge;
 import org.lwjgl.input.Keyboard;
 
 @Mod(
     modid = "autoplace",
-    name = "Vanilla AutoPlace",
+    name = "AutoPlace",
     version = "1.0",
     clientSideOnly = true
 )
@@ -26,11 +26,14 @@ public class AutoPlace {
 
     private final Minecraft mc = Minecraft.getMinecraft();
 
-    private boolean enabled = false;
-    private int cooldown = 0;
+    private boolean enabled;
+    private int cooldown;
 
-    private final KeyBinding toggleKey =
-        new KeyBinding("Toggle AutoPlace", Keyboard.KEY_P, "AutoPlace");
+    private final KeyBinding toggleKey = new KeyBinding(
+        "Toggle AutoPlace",
+        Keyboard.KEY_P,
+        "AutoPlace"
+    );
 
     @Mod.EventHandler
     public void init(
@@ -42,8 +45,9 @@ public class AutoPlace {
 
     @SubscribeEvent
     public void onKey(InputEvent.KeyInputEvent event) {
-        if (toggleKey.isPressed()) {
+        while (toggleKey.isPressed()) {
             enabled = !enabled;
+            cooldown = 0;
         }
     }
 
@@ -51,64 +55,85 @@ public class AutoPlace {
     public void onTick(TickEvent.ClientTickEvent event) {
         if (event.phase != TickEvent.Phase.END) return;
 
-        if (!enabled || mc.thePlayer == null || mc.theWorld == null) {
-            return;
-        }
+        if (mc.thePlayer == null || mc.theWorld == null) return;
+
+        if (!enabled || mc.currentScreen != null) return;
 
         if (cooldown > 0) {
             cooldown--;
             return;
         }
 
-        if (mc.currentScreen != null) return;
+        if (mc.thePlayer.getHeldItem() == null) return;
 
-        if (mc.thePlayer.getHeldItem() == null
-            || !(mc.thePlayer.getHeldItem().getItem()
-                instanceof ItemBlock)) {
-            return;
+        if (!(mc.thePlayer.getHeldItem().getItem()
+                instanceof ItemBlock)) return;
+
+        double mx = mc.thePlayer.motionX;
+        double mz = mc.thePlayer.motionZ;
+
+        // Нужна реальная горизонтальная скорость.
+        double speed = Math.sqrt(mx * mx + mz * mz);
+        if (speed < 0.02) return;
+
+        // Направление движения.
+        double dx = mx / speed;
+        double dz = mz / speed;
+
+        // Позиция нижней части игрока.
+        double px = mc.thePlayer.posX;
+        double py = mc.thePlayer.getEntityBoundingBox().minY;
+        double pz = mc.thePlayer.posZ;
+
+        // Опора немного позади игрока.
+        BlockPos support = new BlockPos(
+            px - dx * 0.30,
+            py - 0.05,
+            pz - dz * 0.30
+        );
+
+        if (mc.theWorld.isAirBlock(support)) {
+            support = support.down();
         }
 
-        // Ищем доступную грань блока непосредственно под игроком.
-        double x = mc.thePlayer.posX;
-        double y = mc.thePlayer.getEntityBoundingBox().minY - 0.05;
-        double z = mc.thePlayer.posZ;
+        if (mc.theWorld.isAirBlock(support)) return;
 
-        BlockPos below = new BlockPos(x, y, z);
+        // Выбираем грань по преобладающему направлению движения.
+        EnumFacing face;
 
-        // Проверяем соседние блоки и их грани.
-        for (EnumFacing side : EnumFacing.values()) {
-            BlockPos neighbor = below.offset(side);
+        if (Math.abs(dx) > Math.abs(dz)) {
+            face = dx > 0
+                ? EnumFacing.EAST
+                : EnumFacing.WEST;
+        } else {
+            face = dz > 0
+                ? EnumFacing.SOUTH
+                : EnumFacing.NORTH;
+        }
 
-            if (mc.theWorld.isAirBlock(neighbor)) continue;
+        BlockPos target = support.offset(face);
 
-            if (!mc.theWorld.getBlockState(neighbor)
-                    .getBlock().isFullBlock()) {
-                continue;
-            }
+        // Не ставим в занятый блок.
+        if (!mc.theWorld.isAirBlock(target)) return;
 
-            // Грань должна быть обращена к свободной позиции.
-            EnumFacing face = side.getOpposite();
+        // Точка на выбранной грани опорного блока.
+        Vec3 hitVec = new Vec3(
+            support.getX() + 0.5 + face.getFrontOffsetX() * 0.5,
+            support.getY() + 0.5,
+            support.getZ() + 0.5 + face.getFrontOffsetZ() * 0.5
+        );
 
-            MovingObjectPosition hit =
-                new MovingObjectPosition(
-                    new net.minecraft.util.Vec3(x, y, z),
-                    face,
-                    neighbor
-                );
-
-            if (mc.playerController.onPlayerRightClick(
-                    mc.thePlayer,
-                    mc.theWorld,
-                    mc.thePlayer.getHeldItem(),
-                    neighbor,
-                    face,
-                    hit.hitVec)) {
-
-                mc.thePlayer.swingItem();
-                cooldown = 1;
-                return;
-            }
+        // Обычный вызов ванильного контроллера.
+        if (mc.playerController.onPlayerRightClick(
+                mc.thePlayer,
+                mc.theWorld,
+                mc.thePlayer.getHeldItem(),
+                support,
+                face,
+                hitVec
+        )) {
+            mc.thePlayer.swingItem();
+            cooldown = 1;
         }
     }
             }
-            
