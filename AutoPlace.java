@@ -22,7 +22,7 @@ import org.lwjgl.input.Keyboard;
 import org.lwjgl.input.Mouse;
 
 /**
- * AutoPlace 1.7 - places the block under your feet on the LAST tick before
+ * AutoPlace 1.8 - places the block under your feet on the LAST tick before
  * landing, so you push off from it right on the edge.
  *
  *  - Toggle key: R.
@@ -33,12 +33,20 @@ import org.lwjgl.input.Mouse;
  *  - Never places on the ground, never earlier in the jump.
  * Uses named MCP mappings (no SRG names).
  */
-@Mod(modid = AutoPlace.MODID, version = "1.7", name = "AutoPlace", clientSideOnly = true, acceptedMinecraftVersions = "[1.8.9]")
+@Mod(modid = AutoPlace.MODID, version = "1.8", name = "AutoPlace", clientSideOnly = true, acceptedMinecraftVersions = "[1.8.9]")
 public class AutoPlace {
     public static final String MODID = "autoplace";
 
     /** RMB counts as active if held now or clicked within this many ticks (3 ticks = 150 ms, covers 10+ CPS). */
     private static final int RMB_GRACE_TICKS = 3;
+
+    /**
+     * true  = place at the very START of the landing tick (a few ms later, right before your move).
+     * false = place at the END of the previous tick (a few ms earlier, 1.7 behaviour).
+     * The tick before landing is the last moment a block can be placed at all:
+     * one tick later your feet are already inside the block layer and vanilla refuses it.
+     */
+    private static final boolean LATE_PHASE = true;
 
     private static final KeyBinding TOGGLE = new KeyBinding("Toggle AutoPlace", Keyboard.KEY_R, "AutoPlace");
     private boolean enabled = false;
@@ -61,7 +69,7 @@ public class AutoPlace {
 
     @SubscribeEvent
     public void onTick(TickEvent.ClientTickEvent e) {
-        if (e.phase != TickEvent.Phase.END) return;
+        if (e.phase != (LATE_PHASE ? TickEvent.Phase.START : TickEvent.Phase.END)) return;
 
         Minecraft mc = Minecraft.getMinecraft();
         if (mc.thePlayer == null || mc.theWorld == null) return;
@@ -125,5 +133,4 @@ public class AutoPlace {
             return;
         }
     }
-    }
-                
+}
