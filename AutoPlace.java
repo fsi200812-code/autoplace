@@ -7,7 +7,6 @@ import net.minecraft.item.ItemBlock;
 import net.minecraft.util.BlockPos;
 import net.minecraft.util.EnumFacing;
 import net.minecraft.util.Vec3;
-import net.minecraftforge.client.settings.KeyConflictContext;
 import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.fml.client.registry.ClientRegistry;
 import net.minecraftforge.fml.common.Mod;
@@ -26,8 +25,8 @@ public class AutoPlace {
 
     private final Minecraft mc = Minecraft.getMinecraft();
 
-    private boolean enabled;
-    private int cooldown;
+    private boolean enabled = false;
+    private int cooldown = 0;
 
     private final KeyBinding toggleKey = new KeyBinding(
         "Toggle AutoPlace",
@@ -45,7 +44,7 @@ public class AutoPlace {
 
     @SubscribeEvent
     public void onKey(InputEvent.KeyInputEvent event) {
-        while (toggleKey.isPressed()) {
+        if (toggleKey.isPressed()) {
             enabled = !enabled;
             cooldown = 0;
         }
@@ -54,9 +53,7 @@ public class AutoPlace {
     @SubscribeEvent
     public void onTick(TickEvent.ClientTickEvent event) {
         if (event.phase != TickEvent.Phase.END) return;
-
         if (mc.thePlayer == null || mc.theWorld == null) return;
-
         if (!enabled || mc.currentScreen != null) return;
 
         if (cooldown > 0) {
@@ -71,21 +68,17 @@ public class AutoPlace {
 
         double mx = mc.thePlayer.motionX;
         double mz = mc.thePlayer.motionZ;
-
-        // Нужна реальная горизонтальная скорость.
         double speed = Math.sqrt(mx * mx + mz * mz);
+
         if (speed < 0.02) return;
 
-        // Направление движения.
         double dx = mx / speed;
         double dz = mz / speed;
 
-        // Позиция нижней части игрока.
         double px = mc.thePlayer.posX;
         double py = mc.thePlayer.getEntityBoundingBox().minY;
         double pz = mc.thePlayer.posZ;
 
-        // Опора немного позади игрока.
         BlockPos support = new BlockPos(
             px - dx * 0.30,
             py - 0.05,
@@ -98,7 +91,6 @@ public class AutoPlace {
 
         if (mc.theWorld.isAirBlock(support)) return;
 
-        // Выбираем грань по преобладающему направлению движения.
         EnumFacing face;
 
         if (Math.abs(dx) > Math.abs(dz)) {
@@ -113,17 +105,14 @@ public class AutoPlace {
 
         BlockPos target = support.offset(face);
 
-        // Не ставим в занятый блок.
         if (!mc.theWorld.isAirBlock(target)) return;
 
-        // Точка на выбранной грани опорного блока.
         Vec3 hitVec = new Vec3(
             support.getX() + 0.5 + face.getFrontOffsetX() * 0.5,
             support.getY() + 0.5,
             support.getZ() + 0.5 + face.getFrontOffsetZ() * 0.5
         );
 
-        // Обычный вызов ванильного контроллера.
         if (mc.playerController.onPlayerRightClick(
                 mc.thePlayer,
                 mc.theWorld,
@@ -136,4 +125,5 @@ public class AutoPlace {
             cooldown = 1;
         }
     }
-            }
+    }
+    
