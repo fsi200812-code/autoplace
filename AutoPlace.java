@@ -9,6 +9,7 @@ import net.minecraft.item.ItemStack;
 import net.minecraft.util.BlockPos;
 import net.minecraft.util.ChatComponentText;
 import net.minecraft.util.EnumFacing;
+import net.minecraft.util.MathHelper;
 import net.minecraft.util.Vec3;
 import net.minecraftforge.client.event.MouseEvent;
 import net.minecraftforge.common.MinecraftForge;
@@ -21,26 +22,28 @@ import org.lwjgl.input.Keyboard;
 import org.lwjgl.input.Mouse;
 
 /**
- * AutoPlace 1.6 - places the block under your feet with vanilla timing.
+ * AutoPlace 1.7 - places the block under your feet on the LAST tick before
+ * landing, so you push off from it right on the edge.
  *
  *  - Toggle key: R.
- *  - Nothing happens unless you right click: every fresh click places one
- *    block in the same tick (never earlier than you).
- *  - While RMB is held it repeats at the vanilla hold delay (4 ticks).
- *  - No random delays, no grace window after you let go.
+ *  - Only works while RMB is held or being clicked fast (10+ CPS).
+ *  - Only in the air and only while falling: it waits until your next tick of
+ *    movement would put your feet through the top of the block layer you are
+ *    about to land on, and places that block exactly then.
+ *  - Never places on the ground, never earlier in the jump.
  * Uses named MCP mappings (no SRG names).
  */
-@Mod(modid = AutoPlace.MODID, version = "1.6", name = "AutoPlace", clientSideOnly = true, acceptedMinecraftVersions = "[1.8.9]")
+@Mod(modid = AutoPlace.MODID, version = "1.7", name = "AutoPlace", clientSideOnly = true, acceptedMinecraftVersions = "[1.8.9]")
 public class AutoPlace {
     public static final String MODID = "autoplace";
 
-    /** Vanilla right-click delay while the button is held. */
-    private static final int HOLD_DELAY_TICKS = 4;
+    /** RMB counts as active if held now or clicked within this many ticks (3 ticks = 150 ms, covers 10+ CPS). */
+    private static final int RMB_GRACE_TICKS = 3;
 
     private static final KeyBinding TOGGLE = new KeyBinding("Toggle AutoPlace", Keyboard.KEY_R, "AutoPlace");
     private boolean enabled = false;
-    private boolean pendingClick = false;
-    private int holdDelay = 0;
+    private int tickCounter = 0;
+    private int lastRmbTick = -1000;
 
     @Mod.EventHandler
     public void init(FMLInitializationEvent e) {
@@ -48,11 +51,11 @@ public class AutoPlace {
         MinecraftForge.EVENT_BUS.register(this);
     }
 
-    /** Every fresh physical right click, even very short ones that fall between ticks. */
+    /** Catches every physical right click, even very short ones that fall between ticks. */
     @SubscribeEvent
     public void onMouse(MouseEvent e) {
         if (e.button == 1 && e.buttonstate) {
-            pendingClick = true;
+            lastRmbTick = tickCounter;
         }
     }
 
@@ -64,33 +67,41 @@ public class AutoPlace {
         if (mc.thePlayer == null || mc.theWorld == null) return;
         EntityPlayerSP p = mc.thePlayer;
 
+        tickCounter++;
+        if (Mouse.isButtonDown(1) || mc.gameSettings.keyBindUseItem.isKeyDown()) {
+            lastRmbTick = tickCounter;
+        }
+
         if (TOGGLE.isPressed()) {
             enabled = !enabled;
-            pendingClick = false;
             p.addChatMessage(new ChatComponentText("AutoPlace: " + (enabled ? "ON" : "OFF")));
         }
 
-        boolean click = pendingClick;
-        pendingClick = false;
-
-        if (holdDelay > 0) holdDelay--;
-
         if (!enabled || mc.currentScreen != null) return;
 
-        boolean held = Mouse.isButtonDown(1) || mc.gameSettings.keyBindUseItem.isKeyDown();
+        // Only while RMB is held / being spam clicked.
+        if (tickCounter - lastRmbTick > RMB_GRACE_TICKS) return;
 
-        // Fresh click: place now. Holding: place every HOLD_DELAY_TICKS like vanilla.
-        boolean fire = click || (held && holdDelay <= 0);
-        if (!fire) return;
+        // Only in the air and falling.
+        if (p.onGround || p.motionY >= 0.0D) return;
+
+        // At the end of a tick motionY is the movement that will be applied next tick.
+        double minY = p.getEntityBoundingBox().minY;
+        double nextMinY = minY + p.motionY;
+
+        // Top of the first block layer below the feet.
+        double top = MathHelper.floor_double(minY);
+
+        // Last tick: the next move would take the feet through that layer's top.
+        if (nextMinY > top) return;
 
         ItemStack stack = p.getHeldItem();
         if (stack == null || !(stack.getItem() instanceof ItemBlock)) return;
 
-        // Block position directly under the player's feet
         BlockPos below = new BlockPos(
-                p.posX,
-                p.getEntityBoundingBox().minY - 0.5,
-                p.posZ);
+                MathHelper.floor_double(p.posX),
+                (int) top - 1,
+                MathHelper.floor_double(p.posZ));
 
         if (!mc.theWorld.isAirBlock(below)) return;
 
@@ -110,9 +121,9 @@ public class AutoPlace {
 
             if (mc.playerController.onPlayerRightClick(p, mc.theWorld, stack, neighbour, side, hit)) {
                 p.swingItem();
-                holdDelay = HOLD_DELAY_TICKS;
             }
             return;
         }
     }
-            }
+    }
+                
