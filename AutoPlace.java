@@ -1,129 +1,118 @@
+package com.example.autoplace;
 
-package autoplace;
-
+import net.minecraft.block.Block;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.entity.EntityPlayerSP;
 import net.minecraft.client.settings.KeyBinding;
 import net.minecraft.item.ItemBlock;
+import net.minecraft.item.ItemStack;
 import net.minecraft.util.BlockPos;
+import net.minecraft.util.ChatComponentText;
 import net.minecraft.util.EnumFacing;
 import net.minecraft.util.Vec3;
+import net.minecraftforge.client.event.MouseEvent;
 import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.fml.client.registry.ClientRegistry;
 import net.minecraftforge.fml.common.Mod;
+import net.minecraftforge.fml.common.event.FMLInitializationEvent;
 import net.minecraftforge.fml.common.eventhandler.SubscribeEvent;
-import net.minecraftforge.fml.common.gameevent.InputEvent;
 import net.minecraftforge.fml.common.gameevent.TickEvent;
 import org.lwjgl.input.Keyboard;
+import org.lwjgl.input.Mouse;
 
-@Mod(
-    modid = "autoplace",
-    name = "AutoPlace",
-    version = "1.0",
-    clientSideOnly = true
-)
+/**
+ * AutoPlace 1.6 - places the block under your feet with vanilla timing.
+ *
+ *  - Toggle key: R.
+ *  - Nothing happens unless you right click: every fresh click places one
+ *    block in the same tick (never earlier than you).
+ *  - While RMB is held it repeats at the vanilla hold delay (4 ticks).
+ *  - No random delays, no grace window after you let go.
+ * Uses named MCP mappings (no SRG names).
+ */
+@Mod(modid = AutoPlace.MODID, version = "1.6", name = "AutoPlace", clientSideOnly = true, acceptedMinecraftVersions = "[1.8.9]")
 public class AutoPlace {
+    public static final String MODID = "autoplace";
 
-    private final Minecraft mc = Minecraft.getMinecraft();
+    /** Vanilla right-click delay while the button is held. */
+    private static final int HOLD_DELAY_TICKS = 4;
 
+    private static final KeyBinding TOGGLE = new KeyBinding("Toggle AutoPlace", Keyboard.KEY_R, "AutoPlace");
     private boolean enabled = false;
-    private int cooldown = 0;
-
-    private final KeyBinding toggleKey = new KeyBinding(
-        "Toggle AutoPlace",
-        Keyboard.KEY_P,
-        "AutoPlace"
-    );
+    private boolean pendingClick = false;
+    private int holdDelay = 0;
 
     @Mod.EventHandler
-    public void init(
-        net.minecraftforge.fml.common.event.FMLInitializationEvent event
-    ) {
-        ClientRegistry.registerKeyBinding(toggleKey);
+    public void init(FMLInitializationEvent e) {
+        ClientRegistry.registerKeyBinding(TOGGLE);
         MinecraftForge.EVENT_BUS.register(this);
     }
 
+    /** Every fresh physical right click, even very short ones that fall between ticks. */
     @SubscribeEvent
-    public void onKey(InputEvent.KeyInputEvent event) {
-        if (toggleKey.isPressed()) {
-            enabled = !enabled;
-            cooldown = 0;
+    public void onMouse(MouseEvent e) {
+        if (e.button == 1 && e.buttonstate) {
+            pendingClick = true;
         }
     }
 
     @SubscribeEvent
-    public void onTick(TickEvent.ClientTickEvent event) {
-        if (event.phase != TickEvent.Phase.END) return;
+    public void onTick(TickEvent.ClientTickEvent e) {
+        if (e.phase != TickEvent.Phase.END) return;
+
+        Minecraft mc = Minecraft.getMinecraft();
         if (mc.thePlayer == null || mc.theWorld == null) return;
+        EntityPlayerSP p = mc.thePlayer;
+
+        if (TOGGLE.isPressed()) {
+            enabled = !enabled;
+            pendingClick = false;
+            p.addChatMessage(new ChatComponentText("AutoPlace: " + (enabled ? "ON" : "OFF")));
+        }
+
+        boolean click = pendingClick;
+        pendingClick = false;
+
+        if (holdDelay > 0) holdDelay--;
+
         if (!enabled || mc.currentScreen != null) return;
 
-        if (cooldown > 0) {
-            cooldown--;
+        boolean held = Mouse.isButtonDown(1) || mc.gameSettings.keyBindUseItem.isKeyDown();
+
+        // Fresh click: place now. Holding: place every HOLD_DELAY_TICKS like vanilla.
+        boolean fire = click || (held && holdDelay <= 0);
+        if (!fire) return;
+
+        ItemStack stack = p.getHeldItem();
+        if (stack == null || !(stack.getItem() instanceof ItemBlock)) return;
+
+        // Block position directly under the player's feet
+        BlockPos below = new BlockPos(
+                p.posX,
+                p.getEntityBoundingBox().minY - 0.5,
+                p.posZ);
+
+        if (!mc.theWorld.isAirBlock(below)) return;
+
+        // Find a solid neighbour block to place against
+        for (EnumFacing dir : EnumFacing.values()) {
+            if (dir == EnumFacing.UP) continue;
+
+            BlockPos neighbour = below.offset(dir);
+            Block b = mc.theWorld.getBlockState(neighbour).getBlock();
+            if (!b.getMaterial().isSolid()) continue;
+
+            EnumFacing side = dir.getOpposite();
+            Vec3 hit = new Vec3(
+                    neighbour.getX() + 0.5 + side.getFrontOffsetX() * 0.5,
+                    neighbour.getY() + 0.5 + side.getFrontOffsetY() * 0.5,
+                    neighbour.getZ() + 0.5 + side.getFrontOffsetZ() * 0.5);
+
+            if (mc.playerController.onPlayerRightClick(p, mc.theWorld, stack, neighbour, side, hit)) {
+                p.swingItem();
+                holdDelay = HOLD_DELAY_TICKS;
+            }
             return;
         }
-
-        if (mc.thePlayer.getHeldItem() == null) return;
-
-        if (!(mc.thePlayer.getHeldItem().getItem()
-                instanceof ItemBlock)) return;
-
-        double mx = mc.thePlayer.motionX;
-        double mz = mc.thePlayer.motionZ;
-        double speed = Math.sqrt(mx * mx + mz * mz);
-
-        if (speed < 0.02) return;
-
-        double dx = mx / speed;
-        double dz = mz / speed;
-
-        double px = mc.thePlayer.posX;
-        double py = mc.thePlayer.getEntityBoundingBox().minY;
-        double pz = mc.thePlayer.posZ;
-
-        BlockPos support = new BlockPos(
-            px - dx * 0.30,
-            py - 0.05,
-            pz - dz * 0.30
-        );
-
-        if (mc.theWorld.isAirBlock(support)) {
-            support = support.down();
-        }
-
-        if (mc.theWorld.isAirBlock(support)) return;
-
-        EnumFacing face;
-
-        if (Math.abs(dx) > Math.abs(dz)) {
-            face = dx > 0
-                ? EnumFacing.EAST
-                : EnumFacing.WEST;
-        } else {
-            face = dz > 0
-                ? EnumFacing.SOUTH
-                : EnumFacing.NORTH;
-        }
-
-        BlockPos target = support.offset(face);
-
-        if (!mc.theWorld.isAirBlock(target)) return;
-
-        Vec3 hitVec = new Vec3(
-            support.getX() + 0.5 + face.getFrontOffsetX() * 0.5,
-            support.getY() + 0.5,
-            support.getZ() + 0.5 + face.getFrontOffsetZ() * 0.5
-        );
-
-        if (mc.playerController.onPlayerRightClick(
-                mc.thePlayer,
-                mc.theWorld,
-                mc.thePlayer.getHeldItem(),
-                support,
-                face,
-                hitVec
-        )) {
-            mc.thePlayer.swingItem();
-            cooldown = 1;
-        }
     }
-    }
-    
+            }
