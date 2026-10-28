@@ -1,11 +1,11 @@
 package com.example.autoplace;
 
-import net.minecraft.block.Block;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.entity.EntityPlayerSP;
 import net.minecraft.client.settings.KeyBinding;
 import net.minecraft.item.ItemBlock;
 import net.minecraft.item.ItemStack;
+import net.minecraft.util.AxisAlignedBB;
 import net.minecraft.util.BlockPos;
 import net.minecraft.util.ChatComponentText;
 import net.minecraft.util.EnumFacing;
@@ -21,19 +21,24 @@ import net.minecraftforge.fml.common.gameevent.TickEvent;
 import org.lwjgl.input.Keyboard;
 import org.lwjgl.input.Mouse;
 
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.List;
+
 /**
- * AutoPlace 1.8 - places the block under your feet on the LAST tick before
- * landing, so you push off from it right on the edge.
+ * AutoPlace 1.9 - places the block under your feet on the LAST tick before
+ * landing, with a safety net so you don't fall.
  *
  *  - Toggle key: R.
  *  - Only works while RMB is held or being clicked fast (10+ CPS).
- *  - Only in the air and only while falling: it waits until your next tick of
- *    movement would put your feet through the top of the block layer you are
- *    about to land on, and places that block exactly then.
- *  - Never places on the ground, never earlier in the jump.
+ *  - Only in the air and only while falling, exactly on the last tick before landing.
+ *  - Safety net (SAFETY_NET): looks at every cell under your feet footprint
+ *    (not just the centre one), and if none can be placed directly, builds
+ *    one extra block next to existing blocks and then the one under you.
  * Uses named MCP mappings (no SRG names).
  */
-@Mod(modid = AutoPlace.MODID, version = "1.8", name = "AutoPlace", clientSideOnly = true, acceptedMinecraftVersions = "[1.8.9]")
+@Mod(modid = AutoPlace.MODID, version = "1.9", name = "AutoPlace", clientSideOnly = true, acceptedMinecraftVersions = "[1.8.9]")
 public class AutoPlace {
     public static final String MODID = "autoplace";
 
@@ -42,11 +47,15 @@ public class AutoPlace {
 
     /**
      * true  = place at the very START of the landing tick (a few ms later, right before your move).
-     * false = place at the END of the previous tick (a few ms earlier, 1.7 behaviour).
-     * The tick before landing is the last moment a block can be placed at all:
-     * one tick later your feet are already inside the block layer and vanilla refuses it.
+     * false = place at the END of the previous tick (a few ms earlier).
+     * The tick before landing is the last moment a block can be placed at all.
      */
     private static final boolean LATE_PHASE = true;
+
+    /** Extra reach so you don't fall: try every cell under the feet footprint and chain one helper block. */
+    private static final boolean SAFETY_NET = true;
+
+    private static final EnumFacing[] SIDES = {EnumFacing.NORTH, EnumFacing.SOUTH, EnumFacing.EAST, EnumFacing.WEST};
 
     private static final KeyBinding TOGGLE = new KeyBinding("Toggle AutoPlace", Keyboard.KEY_R, "AutoPlace");
     private boolean enabled = false;
@@ -93,12 +102,13 @@ public class AutoPlace {
         // Only in the air and falling.
         if (p.onGround || p.motionY >= 0.0D) return;
 
-        // At the end of a tick motionY is the movement that will be applied next tick.
-        double minY = p.getEntityBoundingBox().minY;
+        // motionY is the movement that will be applied in the next move.
+        AxisAlignedBB bb = p.getEntityBoundingBox();
+        double minY = bb.minY;
         double nextMinY = minY + p.motionY;
 
         // Top of the first block layer below the feet.
-        double top = MathHelper.floor_double(minY);
+        int top = MathHelper.floor_double(minY);
 
         // Last tick: the next move would take the feet through that layer's top.
         if (nextMinY > top) return;
@@ -106,20 +116,64 @@ public class AutoPlace {
         ItemStack stack = p.getHeldItem();
         if (stack == null || !(stack.getItem() instanceof ItemBlock)) return;
 
-        BlockPos below = new BlockPos(
-                MathHelper.floor_double(p.posX),
-                (int) top - 1,
-                MathHelper.floor_double(p.posZ));
+        int layerY = top - 1;
 
-        if (!mc.theWorld.isAirBlock(below)) return;
+        // Cells under the feet footprint, nearest to the player's centre first.
+        final double px = p.posX;
+        final double pz = p.posZ;
+        List<BlockPos> cells = new ArrayList<BlockPos>();
+        int x0 = MathHelper.floor_double(SAFETY_NET ? bb.minX : px);
+        int x1 = MathHelper.floor_double(SAFETY_NET ? bb.maxX : px);
+        int z0 = MathHelper.floor_double(SAFETY_NET ? bb.minZ : pz);
+        int z1 = MathHelper.floor_double(SAFETY_NET ? bb.maxZ : pz);
+        for (int x = x0; x <= x1; x++) {
+            for (int z = z0; z <= z1; z++) {
+                BlockPos c = new BlockPos(x, layerY, z);
+                if (mc.theWorld.isAirBlock(c)) cells.add(c);
+            }
+        }
+        if (cells.isEmpty()) return; // something solid already under us
 
-        // Find a solid neighbour block to place against
+        Collections.sort(cells, new Comparator<BlockPos>() {
+            @Override
+            public int compare(BlockPos a, BlockPos b) {
+                double da = sq(a.getX() + 0.5 - px) + sq(a.getZ() + 0.5 - pz);
+                double db = sq(b.getX() + 0.5 - px) + sq(b.getZ() + 0.5 - pz);
+                return Double.compare(da, db);
+            }
+        });
+
+        // 1) Place directly under the feet, centre cell first.
+        for (BlockPos c : cells) {
+            if (placeAt(mc, p, stack, c)) return;
+        }
+
+        if (!SAFETY_NET) return;
+
+        // 2) Safety net: place one helper block next to an existing block, then the cell under us.
+        for (BlockPos c : cells) {
+            for (EnumFacing dir : SIDES) {
+                BlockPos helper = c.offset(dir);
+                if (!mc.theWorld.isAirBlock(helper)) continue;
+                if (placeAt(mc, p, stack, helper)) {
+                    placeAt(mc, p, stack, c);
+                    return;
+                }
+            }
+        }
+    }
+
+    private static double sq(double v) {
+        return v * v;
+    }
+
+    /** Places a block into the empty cell against any solid neighbour. Returns true if the click was accepted. */
+    private boolean placeAt(Minecraft mc, EntityPlayerSP p, ItemStack stack, BlockPos cell) {
         for (EnumFacing dir : EnumFacing.values()) {
             if (dir == EnumFacing.UP) continue;
 
-            BlockPos neighbour = below.offset(dir);
-            Block b = mc.theWorld.getBlockState(neighbour).getBlock();
-            if (!b.getMaterial().isSolid()) continue;
+            BlockPos neighbour = cell.offset(dir);
+            if (!mc.theWorld.getBlockState(neighbour).getBlock().getMaterial().isSolid()) continue;
 
             EnumFacing side = dir.getOpposite();
             Vec3 hit = new Vec3(
@@ -129,8 +183,9 @@ public class AutoPlace {
 
             if (mc.playerController.onPlayerRightClick(p, mc.theWorld, stack, neighbour, side, hit)) {
                 p.swingItem();
+                return true;
             }
-            return;
         }
+        return false;
     }
-}
+                }
