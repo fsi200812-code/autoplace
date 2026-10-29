@@ -1,3 +1,4 @@
+
 package com.example.autoplace;
 
 import net.minecraft.client.Minecraft;
@@ -26,166 +27,228 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
 
-/**
- * AutoPlace 1.9 - places the block under your feet on the LAST tick before
- * landing, with a safety net so you don't fall.
- *
- *  - Toggle key: R.
- *  - Only works while RMB is held or being clicked fast (10+ CPS).
- *  - Only in the air and only while falling, exactly on the last tick before landing.
- *  - Safety net (SAFETY_NET): looks at every cell under your feet footprint
- *    (not just the centre one), and if none can be placed directly, builds
- *    one extra block next to existing blocks and then the one under you.
- * Uses named MCP mappings (no SRG names).
- */
-@Mod(modid = AutoPlace.MODID, version = "1.9", name = "AutoPlace", clientSideOnly = true, acceptedMinecraftVersions = "[1.8.9]")
+@Mod(
+    modid = AutoPlace.MODID,
+    version = "1.10",
+    name = "AutoPlace",
+    clientSideOnly = true,
+    acceptedMinecraftVersions = "[1.8.9]"
+)
 public class AutoPlace {
+
     public static final String MODID = "autoplace";
 
-    /** RMB counts as active if held now or clicked within this many ticks (3 ticks = 150 ms, covers 10+ CPS). */
     private static final int RMB_GRACE_TICKS = 3;
 
-    /**
-     * true  = place at the very START of the landing tick (a few ms later, right before your move).
-     * false = place at the END of the previous tick (a few ms earlier).
-     * The tick before landing is the last moment a block can be placed at all.
-     */
-    private static final boolean LATE_PHASE = true;
+    // END checks the placement earlier than the previous START phase.
+    private static final TickEvent.Phase PLACEMENT_PHASE =
+        TickEvent.Phase.END;
 
-    /** Extra reach so you don't fall: try every cell under the feet footprint and chain one helper block. */
-    private static final boolean SAFETY_NET = true;
+    // Do not place additional helper blocks.
+    private static final boolean SAFETY_NET = false;
 
-    private static final EnumFacing[] SIDES = {EnumFacing.NORTH, EnumFacing.SOUTH, EnumFacing.EAST, EnumFacing.WEST};
+    private static final KeyBinding TOGGLE =
+        new KeyBinding(
+            "Toggle AutoPlace",
+            Keyboard.KEY_R,
+            "AutoPlace"
+        );
 
-    private static final KeyBinding TOGGLE = new KeyBinding("Toggle AutoPlace", Keyboard.KEY_R, "AutoPlace");
     private boolean enabled = false;
     private int tickCounter = 0;
     private int lastRmbTick = -1000;
 
     @Mod.EventHandler
-    public void init(FMLInitializationEvent e) {
+    public void init(FMLInitializationEvent event) {
         ClientRegistry.registerKeyBinding(TOGGLE);
         MinecraftForge.EVENT_BUS.register(this);
     }
 
-    /** Catches every physical right click, even very short ones that fall between ticks. */
     @SubscribeEvent
-    public void onMouse(MouseEvent e) {
-        if (e.button == 1 && e.buttonstate) {
+    public void onMouse(MouseEvent event) {
+        if (event.button == 1 && event.buttonstate) {
             lastRmbTick = tickCounter;
         }
     }
 
     @SubscribeEvent
-    public void onTick(TickEvent.ClientTickEvent e) {
-        if (e.phase != (LATE_PHASE ? TickEvent.Phase.START : TickEvent.Phase.END)) return;
+    public void onTick(TickEvent.ClientTickEvent event) {
 
-        Minecraft mc = Minecraft.getMinecraft();
-        if (mc.thePlayer == null || mc.theWorld == null) return;
-        EntityPlayerSP p = mc.thePlayer;
+        if (event.phase != PLACEMENT_PHASE) {
+            return;
+        }
+
+        Minecraft mc = Minecraft.func_71410_x();
+
+        if (mc.field_71439_g == null ||
+            mc.field_71441_e == null) {
+            return;
+        }
+
+        EntityPlayerSP player = mc.field_71439_g;
 
         tickCounter++;
-        if (Mouse.isButtonDown(1) || mc.gameSettings.keyBindUseItem.isKeyDown()) {
+
+        if (Mouse.isButtonDown(1) ||
+            mc.field_71474_y.field_74313_G.func_151470_d()) {
             lastRmbTick = tickCounter;
         }
 
-        if (TOGGLE.isPressed()) {
+        if (TOGGLE.func_151468_f()) {
             enabled = !enabled;
-            p.addChatMessage(new ChatComponentText("AutoPlace: " + (enabled ? "ON" : "OFF")));
+
+            player.func_145747_a(
+                new ChatComponentText(
+                    "AutoPlace: " + (enabled ? "ON" : "OFF")
+                )
+            );
         }
 
-        if (!enabled || mc.currentScreen != null) return;
+        if (!enabled || mc.field_71462_r != null) {
+            return;
+        }
 
-        // Only while RMB is held / being spam clicked.
-        if (tickCounter - lastRmbTick > RMB_GRACE_TICKS) return;
+        // Only when right mouse button is active.
+        if (tickCounter - lastRmbTick > RMB_GRACE_TICKS) {
+            return;
+        }
 
-        // Only in the air and falling.
-        if (p.onGround || p.motionY >= 0.0D) return;
+        // Only while airborne and falling.
+        if (player.field_70122_E ||
+            player.field_70181_x >= 0.0D) {
+            return;
+        }
 
-        // motionY is the movement that will be applied in the next move.
-        AxisAlignedBB bb = p.getEntityBoundingBox();
-        double minY = bb.minY;
-        double nextMinY = minY + p.motionY;
+        ItemStack stack = player.func_70694_bm();
 
-        // Top of the first block layer below the feet.
-        int top = MathHelper.floor_double(minY);
+        if (stack == null ||
+            !(stack.func_77973_b() instanceof ItemBlock)) {
+            return;
+        }
 
-        // Last tick: the next move would take the feet through that layer's top.
-        if (nextMinY > top) return;
+        AxisAlignedBB box = player.func_174813_aQ();
 
-        ItemStack stack = p.getHeldItem();
-        if (stack == null || !(stack.getItem() instanceof ItemBlock)) return;
+        double minY = box.field_72338_b;
+        double nextMinY = minY + player.field_70181_x;
+
+        int top = MathHelper.func_76128_c(minY);
+
+        // Wait until the next movement would cross the block layer.
+        if (nextMinY > top) {
+            return;
+        }
 
         int layerY = top - 1;
 
-        // Cells under the feet footprint, nearest to the player's centre first.
-        final double px = p.posX;
-        final double pz = p.posZ;
+        final double px = player.field_70165_t;
+        final double pz = player.field_70161_v;
+
         List<BlockPos> cells = new ArrayList<BlockPos>();
-        int x0 = MathHelper.floor_double(SAFETY_NET ? bb.minX : px);
-        int x1 = MathHelper.floor_double(SAFETY_NET ? bb.maxX : px);
-        int z0 = MathHelper.floor_double(SAFETY_NET ? bb.minZ : pz);
-        int z1 = MathHelper.floor_double(SAFETY_NET ? bb.maxZ : pz);
+
+        int x0 = MathHelper.func_76128_c(box.field_72340_a);
+        int x1 = MathHelper.func_76128_c(box.field_72336_d);
+        int z0 = MathHelper.func_76128_c(box.field_72339_c);
+        int z1 = MathHelper.func_76128_c(box.field_72334_f);
+
         for (int x = x0; x <= x1; x++) {
             for (int z = z0; z <= z1; z++) {
-                BlockPos c = new BlockPos(x, layerY, z);
-                if (mc.theWorld.isAirBlock(c)) cells.add(c);
-            }
-        }
-        if (cells.isEmpty()) return; // something solid already under us
 
-        Collections.sort(cells, new Comparator<BlockPos>() {
-            @Override
-            public int compare(BlockPos a, BlockPos b) {
-                double da = sq(a.getX() + 0.5 - px) + sq(a.getZ() + 0.5 - pz);
-                double db = sq(b.getX() + 0.5 - px) + sq(b.getZ() + 0.5 - pz);
-                return Double.compare(da, db);
-            }
-        });
+                BlockPos pos = new BlockPos(x, layerY, z);
 
-        // 1) Place directly under the feet, centre cell first.
-        for (BlockPos c : cells) {
-            if (placeAt(mc, p, stack, c)) return;
-        }
-
-        if (!SAFETY_NET) return;
-
-        // 2) Safety net: place one helper block next to an existing block, then the cell under us.
-        for (BlockPos c : cells) {
-            for (EnumFacing dir : SIDES) {
-                BlockPos helper = c.offset(dir);
-                if (!mc.theWorld.isAirBlock(helper)) continue;
-                if (placeAt(mc, p, stack, helper)) {
-                    placeAt(mc, p, stack, c);
-                    return;
+                if (mc.field_71441_e.func_175623_d(pos)) {
+                    cells.add(pos);
                 }
             }
         }
+
+        if (cells.isEmpty()) {
+            return;
+        }
+
+        Collections.sort(
+            cells,
+            new Comparator<BlockPos>() {
+                @Override
+                public int compare(BlockPos a, BlockPos b) {
+
+                    double da =
+                        sq(a.func_177958_n() + 0.5D - px) +
+                        sq(a.func_177952_p() + 0.5D - pz);
+
+                    double db =
+                        sq(b.func_177958_n() + 0.5D - px) +
+                        sq(b.func_177952_p() + 0.5D - pz);
+
+                    return Double.compare(da, db);
+                }
+            }
+        );
+
+        // Try a single block directly under the player's feet.
+        for (BlockPos pos : cells) {
+            if (placeAt(mc, player, stack, pos)) {
+                return;
+            }
+        }
+
+        // SAFETY_NET is disabled, so no extra placement attempts.
+        if (!SAFETY_NET) {
+            return;
+        }
     }
 
-    private static double sq(double v) {
-        return v * v;
+    private static double sq(double value) {
+        return value * value;
     }
 
-    /** Places a block into the empty cell against any solid neighbour. Returns true if the click was accepted. */
-    private boolean placeAt(Minecraft mc, EntityPlayerSP p, ItemStack stack, BlockPos cell) {
-        for (EnumFacing dir : EnumFacing.values()) {
-            if (dir == EnumFacing.UP) continue;
+    private boolean placeAt(
+        Minecraft mc,
+        EntityPlayerSP player,
+        ItemStack stack,
+        BlockPos cell
+    ) {
 
-            BlockPos neighbour = cell.offset(dir);
-            if (!mc.theWorld.getBlockState(neighbour).getBlock().getMaterial().isSolid()) continue;
+        for (EnumFacing direction : EnumFacing.values()) {
 
-            EnumFacing side = dir.getOpposite();
+            if (direction == EnumFacing.UP) {
+                continue;
+            }
+
+            BlockPos neighbour = cell.func_177972_a(direction);
+
+            if (!mc.field_71441_e
+                    .func_180495_p(neighbour)
+                    .func_177230_c()
+                    .func_149688_o()
+                    .func_76220_a()) {
+                continue;
+            }
+
+            EnumFacing side = direction.func_176734_d();
+
             Vec3 hit = new Vec3(
-                    neighbour.getX() + 0.5 + side.getFrontOffsetX() * 0.5,
-                    neighbour.getY() + 0.5 + side.getFrontOffsetY() * 0.5,
-                    neighbour.getZ() + 0.5 + side.getFrontOffsetZ() * 0.5);
+                neighbour.func_177958_n() + 0.5D
+                    + side.func_82601_c() * 0.5D,
+                neighbour.func_177956_o() + 0.5D
+                    + side.func_96559_d() * 0.5D,
+                neighbour.func_177952_p() + 0.5D
+                    + side.func_82599_e() * 0.5D
+            );
 
-            if (mc.playerController.onPlayerRightClick(p, mc.theWorld, stack, neighbour, side, hit)) {
-                p.swingItem();
+            if (mc.field_71442_b.func_178890_a(
+                    player,
+                    mc.field_71441_e,
+                    stack,
+                    neighbour,
+                    side,
+                    hit)) {
+
+                player.func_71038_i();
                 return true;
             }
         }
+
         return false;
     }
-                }
+    }
+                    
