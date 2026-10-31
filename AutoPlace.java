@@ -17,7 +17,6 @@ import net.minecraft.util.ChatComponentText;
 import net.minecraft.util.EnumFacing;
 import net.minecraft.util.MathHelper;
 import net.minecraft.util.Vec3;
-
 import net.minecraftforge.client.event.MouseEvent;
 import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.fml.client.registry.ClientRegistry;
@@ -32,7 +31,7 @@ import org.lwjgl.input.Mouse;
 @Mod(
     modid = AutoPlace.MODID,
     name = "AutoPlace",
-    version = "1.10",
+    version = "1.11",
     clientSideOnly = true,
     acceptedMinecraftVersions = "[1.8.9]"
 )
@@ -43,11 +42,7 @@ public class AutoPlace {
     private static final int RMB_GRACE_TICKS = 3;
 
     private static final KeyBinding TOGGLE =
-        new KeyBinding(
-            "Toggle AutoPlace",
-            Keyboard.KEY_R,
-            "AutoPlace"
-        );
+        new KeyBinding("Toggle AutoPlace", Keyboard.KEY_R, "AutoPlace");
 
     private boolean enabled = false;
     private int tickCounter = 0;
@@ -79,7 +74,6 @@ public class AutoPlace {
         }
 
         EntityPlayerSP player = mc.thePlayer;
-
         tickCounter++;
 
         if (Mouse.isButtonDown(1)
@@ -89,11 +83,8 @@ public class AutoPlace {
 
         if (TOGGLE.isPressed()) {
             enabled = !enabled;
-
             player.addChatMessage(
-                new ChatComponentText(
-                    "AutoPlace: " + (enabled ? "ON" : "OFF")
-                )
+                new ChatComponentText("AutoPlace: " + (enabled ? "ON" : "OFF"))
             );
         }
 
@@ -128,15 +119,15 @@ public class AutoPlace {
 
         int layerY = top - 1;
 
-        final double px = player.posX;
-        final double pz = player.posZ;
+        double px = player.posX;
+        double pz = player.posZ;
 
         List<BlockPos> cells = new ArrayList<BlockPos>();
 
-        int x0 = MathHelper.floor_double(box.minX);
-        int x1 = MathHelper.floor_double(box.maxX);
-        int z0 = MathHelper.floor_double(box.minZ);
-        int z1 = MathHelper.floor_double(box.maxZ);
+        int x0 = MathHelper.floor_double(box.minX + 0.001D);
+        int x1 = MathHelper.floor_double(box.maxX - 0.001D);
+        int z0 = MathHelper.floor_double(box.minZ + 0.001D);
+        int z1 = MathHelper.floor_double(box.maxZ - 0.001D);
 
         for (int x = x0; x <= x1; x++) {
             for (int z = z0; z <= z1; z++) {
@@ -152,23 +143,18 @@ public class AutoPlace {
             return;
         }
 
-        Collections.sort(
-            cells,
-            new Comparator<BlockPos>() {
-                @Override
-                public int compare(BlockPos a, BlockPos b) {
-                    double da =
-                        square(a.getX() + 0.5D - px)
-                        + square(a.getZ() + 0.5D - pz);
+        Collections.sort(cells, new Comparator<BlockPos>() {
+            @Override
+            public int compare(BlockPos a, BlockPos b) {
+                double da = square(a.getX() + 0.5D - px)
+                    + square(a.getZ() + 0.5D - pz);
 
-                    double db =
-                        square(b.getX() + 0.5D - px)
-                        + square(b.getZ() + 0.5D - pz);
+                double db = square(b.getX() + 0.5D - px)
+                    + square(b.getZ() + 0.5D - pz);
 
-                    return Double.compare(da, db);
-                }
+                return Double.compare(da, db);
             }
-        );
+        });
 
         for (BlockPos pos : cells) {
             if (placeAt(mc, player, stack, pos)) {
@@ -182,13 +168,12 @@ public class AutoPlace {
     }
 
     private boolean placeAt(
-        Minecraft mc,
-        EntityPlayerSP player,
-        ItemStack stack,
-        BlockPos target
-    ) {
-        for (EnumFacing direction : EnumFacing.values()) {
+            Minecraft mc,
+            EntityPlayerSP player,
+            ItemStack stack,
+            BlockPos target) {
 
+        for (EnumFacing direction : EnumFacing.values()) {
             if (direction == EnumFacing.UP) {
                 continue;
             }
@@ -196,9 +181,7 @@ public class AutoPlace {
             BlockPos neighbour = target.offset(direction);
 
             if (!mc.theWorld.getBlockState(neighbour)
-                    .getBlock()
-                    .getMaterial()
-                    .isSolid()) {
+                    .getBlock().getMaterial().isSolid()) {
                 continue;
             }
 
@@ -206,12 +189,20 @@ public class AutoPlace {
 
             Vec3 hit = new Vec3(
                 neighbour.getX() + 0.5D
-                    + side.getFrontOffsetX() * 0.5D,
+                    + side.getFrontOffsetX() * 0.499D,
                 neighbour.getY() + 0.5D
-                    + side.getFrontOffsetY() * 0.5D,
+                    + side.getFrontOffsetY() * 0.499D,
                 neighbour.getZ() + 0.5D
-                    + side.getFrontOffsetZ() * 0.5D
+                    + side.getFrontOffsetZ() * 0.499D
             );
+
+            double dx = hit.xCoord - player.posX;
+            double dy = hit.yCoord - (player.posY + player.getEyeHeight());
+            double dz = hit.zCoord - player.posZ;
+
+            if (dx * dx + dy * dy + dz * dz > 4.5D * 4.5D) {
+                continue;
+            }
 
             if (mc.playerController.onPlayerRightClick(
                     player,
@@ -228,5 +219,4 @@ public class AutoPlace {
 
         return false;
     }
-    }
-        
+            }
