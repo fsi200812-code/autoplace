@@ -29,16 +29,7 @@ import java.util.Random;
 
 /**
  * AutoPlace 2.2
- *
- * Ставит блоки максимально близко к тому, как это делает человек:
- * - рандомная точка на грани
- * - небольшой случайный кулдаун после постановки
- * - оригинальная логика определения края
- *
- * EDGE_MODE (по умолчанию): ставит вперёд с края блока.
- * LANDING_MODE (выкл): старый режим под ноги.
- *
- * Работает только пока держишь/спамишь ПКМ. Тоггл: R.
+ * Более естественная постановка блоков.
  */
 @Mod(modid = AutoPlace.MODID, version = "2.2", name = "AutoPlace", clientSideOnly = true, acceptedMinecraftVersions = "[1.8.9]")
 public class AutoPlace {
@@ -130,7 +121,6 @@ public class AutoPlace {
     }
 
     private void edgePlace(Minecraft mc, EntityPlayerSP p, ItemStack stack, double dX, double dZ) {
-        // Слишком медленно — не ставим
         if (Math.abs(dX) < 0.05D && Math.abs(dZ) < 0.05D) return;
 
         int dirX = 0;
@@ -143,7 +133,6 @@ public class AutoPlace {
         int nx = MathHelper.floor_double(p.posX + dX);
         int nz = MathHelper.floor_double(p.posZ + dZ);
 
-        // Ещё не последний тик на этом блоке
         if (nx == cx && nz == cz) return;
 
         int layerY = MathHelper.floor_double(p.getEntityBoundingBox().minY - 0.001D);
@@ -160,8 +149,7 @@ public class AutoPlace {
         else side = EnumFacing.NORTH;
 
         if (clickFace(mc, p, stack, support, side)) {
-            // Небольшой случайный кулдаун — выглядит живее
-            placeCooldown = RAND.nextInt(3); // 0, 1 или 2 тика
+            placeCooldown = RAND.nextInt(3); // 0-2 тика
         }
     }
 
@@ -194,4 +182,79 @@ public class AutoPlace {
         Collections.sort(cells, new Comparator<BlockPos>() {
             @Override
             public int compare(BlockPos a, BlockPos b) {
-                double da = sq(a.getX() + 0.5 - px) + sq(a.getZ() + 0
+                double da = sq(a.getX() + 0.5 - px) + sq(a.getZ() + 0.5 - pz);
+                double db = sq(b.getX() + 0.5 - px) + sq(b.getZ() + 0.5 - pz);
+                return Double.compare(da, db);
+            }
+        });
+
+        for (BlockPos c : cells) {
+            if (placeAt(mc, p, stack, c)) {
+                placeCooldown = RAND.nextInt(2);
+                return;
+            }
+        }
+
+        if (!SAFETY_NET) return;
+
+        for (BlockPos c : cells) {
+            for (EnumFacing dir : SIDES) {
+                BlockPos helper = c.offset(dir);
+                if (!mc.theWorld.isAirBlock(helper)) continue;
+                if (placeAt(mc, p, stack, helper)) {
+                    placeAt(mc, p, stack, c);
+                    placeCooldown = 1 + RAND.nextInt(2);
+                    return;
+                }
+            }
+        }
+    }
+
+    private static double sq(double v) {
+        return v * v;
+    }
+
+    private boolean isSolid(Minecraft mc, BlockPos pos) {
+        return mc.theWorld.getBlockState(pos).getBlock().getMaterial().isSolid();
+    }
+
+    private boolean placeAt(Minecraft mc, EntityPlayerSP p, ItemStack stack, BlockPos cell) {
+        for (EnumFacing dir : EnumFacing.values()) {
+            if (dir == EnumFacing.UP) continue;
+            BlockPos neighbour = cell.offset(dir);
+            if (!isSolid(mc, neighbour)) continue;
+            if (clickFace(mc, p, stack, neighbour, dir.getOpposite())) return true;
+        }
+        return false;
+    }
+
+    private boolean clickFace(Minecraft mc, EntityPlayerSP p, ItemStack stack, BlockPos block, EnumFacing side) {
+        double hx = block.getX() + 0.5 + side.getFrontOffsetX() * 0.5;
+        double hy = block.getY() + 0.5 + side.getFrontOffsetY() * 0.5;
+        double hz = block.getZ() + 0.5 + side.getFrontOffsetZ() * 0.5;
+
+        // Случайное смещение — выглядит как клик человека
+        double ox = (RAND.nextDouble() - 0.5) * 0.55;
+        double oy = (RAND.nextDouble() - 0.5) * 0.55;
+        double oz = (RAND.nextDouble() - 0.5) * 0.55;
+
+        if (side.getFrontOffsetX() != 0) {
+            hy += oy;
+            hz += oz;
+        } else if (side.getFrontOffsetY() != 0) {
+            hx += ox;
+            hz += oz;
+        } else {
+            hx += ox;
+            hy += oy;
+        }
+
+        Vec3 hit = new Vec3(hx, hy, hz);
+
+        if (mc.playerController.onPlayerRightClick(p, mc.theWorld, stack, block, side, hit)) {
+            p.swingItem();
+            return true;
+        }
+        return false;
+    }
+            }
