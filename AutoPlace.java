@@ -1,4 +1,4 @@
-package com.example.speedtelly;
+import net.minecraft.client.Minecraft;
 
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.entity.EntityPlayerSP;
@@ -19,7 +19,7 @@ import net.minecraftforge.fml.common.gameevent.TickEvent;
 import org.lwjgl.input.Keyboard;
 
 @Mod(modid = "speedtellyhelper", name = "SpeedTellyHelper", version = "1.0", clientSideOnly = true)
-public class SpeedTellyHelper {
+public class AutoPlace {
 
     // на сколько блоков вперёд от места посадки ставить (0 = под ногами)
     private static final int AHEAD = 0;
