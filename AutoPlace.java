@@ -1,6 +1,4 @@
 import net.minecraft.client.Minecraft;
-
-import net.minecraft.client.Minecraft;
 import net.minecraft.client.entity.EntityPlayerSP;
 import net.minecraft.client.settings.KeyBinding;
 import net.minecraft.item.ItemBlock;
@@ -60,9 +58,8 @@ public class AutoPlace {
         wasOnGround = onGround;
 
         if (!enabled) return;
-        if (!mc.isSingleplayer()) return;          // только одиночка
         if (mc.currentScreen != null) return;
-        if (!mc.gameSettings.keyBindUseItem.isKeyDown()) return; // только пока зажата ПКМ
+        if (!mc.gameSettings.keyBindUseItem.isKeyDown()) return;   // только пока зажата ПКМ
         if (onGround || placedThisJump || p.motionY >= 0) return;
 
         // последний тик: на следующем тике ноги опустятся до высоты прыжка
@@ -72,8 +69,18 @@ public class AutoPlace {
         if (placeBlock(p)) placedThisJump = true;
     }
 
+    // разворачивает камеру на точку; дальше камеру ты крутишь сам
+    private void aimAt(EntityPlayerSP p, Vec3 hit) {
+        double dx = hit.xCoord - p.posX;
+        double dy = hit.yCoord - (p.posY + p.getEyeHeight());
+        double dz = hit.zCoord - p.posZ;
+        double dist = Math.sqrt(dx * dx + dz * dz);
+        p.rotationYaw = (float) (Math.atan2(dz, dx) * 180.0 / Math.PI) - 90.0F;
+        p.rotationPitch = (float) (-(Math.atan2(dy, dist) * 180.0 / Math.PI));
+    }
+
     private boolean placeBlock(EntityPlayerSP p) {
-        ItemStack held = p.getHeldItem();           // блок из руки, хотбар не трогаем
+        ItemStack held = p.getHeldItem();   // блок из руки, хотбар не трогаем
         if (held == null || !(held.getItem() instanceof ItemBlock)) return false;
 
         // направление берём по движению, а не по камере
@@ -101,12 +108,13 @@ public class AutoPlace {
             BlockPos n = target.offset(f);
             if (!mc.theWorld.getBlockState(n).getBlock().getMaterial().isSolid()) continue;
 
-            EnumFacing side = f.getOpposite();      // грань соседа, смотрящая на target
+            EnumFacing side = f.getOpposite();   // грань соседа, смотрящая на target
             Vec3 hit = new Vec3(
                     n.getX() + 0.5 + side.getFrontOffsetX() * 0.5,
                     n.getY() + 0.5 + side.getFrontOffsetY() * 0.5,
                     n.getZ() + 0.5 + side.getFrontOffsetZ() * 0.5);
 
+            aimAt(p, hit);
             boolean ok = mc.playerController.onPlayerRightClick(p, mc.theWorld, held, n, side, hit);
             if (ok) p.swingItem();
             return ok;
