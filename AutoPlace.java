@@ -24,14 +24,16 @@ import org.lwjgl.input.Mouse;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.LinkedList;
 import java.util.List;
+import java.util.Queue;
 import java.util.Random;
 
 /**
- * AutoPlace 2.2
- * Более естественная постановка блоков.
+ * AutoPlace 2.4 — Speed Telly helper
+ * Работает только при CPS от 10 до 50.
  */
-@Mod(modid = AutoPlace.MODID, version = "2.2", name = "AutoPlace", clientSideOnly = true, acceptedMinecraftVersions = "[1.8.9]")
+@Mod(modid = AutoPlace.MODID, version = "2.4", name = "AutoPlace", clientSideOnly = true, acceptedMinecraftVersions = "[1.8.9]")
 public class AutoPlace {
     public static final String MODID = "autoplace";
 
@@ -40,6 +42,9 @@ public class AutoPlace {
     private static final boolean LANDING_MODE = false;
     private static final boolean LATE_PHASE = true;
     private static final boolean SAFETY_NET = true;
+
+    private static final int MIN_CPS = 10;
+    private static final int MAX_CPS = 50;
 
     private static final EnumFacing[] SIDES = {EnumFacing.NORTH, EnumFacing.SOUTH, EnumFacing.EAST, EnumFacing.WEST};
     private static final Random RAND = new Random();
@@ -53,6 +58,8 @@ public class AutoPlace {
     private double lastX = 0;
     private double lastZ = 0;
 
+    private final Queue<Long> clickTimes = new LinkedList<Long>();
+
     @Mod.EventHandler
     public void init(FMLInitializationEvent e) {
         ClientRegistry.registerKeyBinding(TOGGLE);
@@ -63,7 +70,20 @@ public class AutoPlace {
     public void onMouse(MouseEvent e) {
         if (e.button == 1 && e.buttonstate) {
             lastRmbTick = tickCounter;
+            long now = System.currentTimeMillis();
+            clickTimes.add(now);
+            while (!clickTimes.isEmpty() && now - clickTimes.peek() > 1000) {
+                clickTimes.poll();
+            }
         }
+    }
+
+    private int getCurrentCPS() {
+        long now = System.currentTimeMillis();
+        while (!clickTimes.isEmpty() && now - clickTimes.peek() > 1000) {
+            clickTimes.poll();
+        }
+        return clickTimes.size();
     }
 
     @SubscribeEvent
@@ -105,6 +125,10 @@ public class AutoPlace {
         if (!enabled || mc.currentScreen != null) return;
         if (tickCounter - lastRmbTick > RMB_GRACE_TICKS) return;
 
+        // Работаем ТОЛЬКО при CPS от 10 до 50
+        int cps = getCurrentCPS();
+        if (cps < MIN_CPS || cps > MAX_CPS) return;
+
         if (placeCooldown > 0) {
             placeCooldown--;
             return;
@@ -113,15 +137,23 @@ public class AutoPlace {
         ItemStack stack = p.getHeldItem();
         if (stack == null || !(stack.getItem() instanceof ItemBlock)) return;
 
+        boolean placed = false;
+
         if (p.onGround) {
-            if (EDGE_MODE) edgePlace(mc, p, stack, dX, dZ);
+            if (EDGE_MODE) {
+                placed = edgePlace(mc, p, stack, dX, dZ);
+            }
         } else if (LANDING_MODE) {
-            landingPlace(mc, p, stack);
+            placed = landingPlace(mc, p, stack);
+        }
+
+        if (placed) {
+            placeCooldown = 1 + RAND.nextInt(2); // небольшой кулдаун
         }
     }
 
-    private void edgePlace(Minecraft mc, EntityPlayerSP p, ItemStack stack, double dX, double dZ) {
-        if (Math.abs(dX) < 0.05D && Math.abs(dZ) < 0.05D) return;
+    private boolean edgePlace(Minecraft mc, EntityPlayerSP p, ItemStack stack, double dX, double dZ) {
+        if (Math.abs(dX) < 0.05D && Math.abs(dZ) < 0.05D) return false;
 
         int dirX = 0;
         int dirZ = 0;
@@ -133,14 +165,14 @@ public class AutoPlace {
         int nx = MathHelper.floor_double(p.posX + dX);
         int nz = MathHelper.floor_double(p.posZ + dZ);
 
-        if (nx == cx && nz == cz) return;
+        if (nx == cx && nz == cz) return false;
 
         int layerY = MathHelper.floor_double(p.getEntityBoundingBox().minY - 0.001D);
         BlockPos support = new BlockPos(cx, layerY, cz);
         BlockPos target = new BlockPos(cx + dirX, layerY, cz + dirZ);
 
-        if (!isSolid(mc, support)) return;
-        if (!mc.theWorld.isAirBlock(target)) return;
+        if (!isSolid(mc, support)) return false;
+        if (!mc.theWorld.isAirBlock(target)) return false;
 
         EnumFacing side;
         if (dirX > 0) side = EnumFacing.EAST;
@@ -148,19 +180,17 @@ public class AutoPlace {
         else if (dirZ > 0) side = EnumFacing.SOUTH;
         else side = EnumFacing.NORTH;
 
-        if (clickFace(mc, p, stack, support, side)) {
-            placeCooldown = RAND.nextInt(3); // 0-2 тика
-        }
+        return clickFace(mc, p, stack, support, side);
     }
 
-    private void landingPlace(Minecraft mc, EntityPlayerSP p, ItemStack stack) {
-        if (p.motionY >= 0.0D) return;
+    private boolean landingPlace(Minecraft mc, EntityPlayerSP p, ItemStack stack) {
+        if (p.motionY >= 0.0D) return false;
 
         AxisAlignedBB bb = p.getEntityBoundingBox();
         double minY = bb.minY;
         double nextMinY = minY + p.motionY;
         int top = MathHelper.floor_double(minY);
-        if (nextMinY > top) return;
+        if (nextMinY > top) return false;
 
         int layerY = top - 1;
 
@@ -177,7 +207,7 @@ public class AutoPlace {
                 if (mc.theWorld.isAirBlock(c)) cells.add(c);
             }
         }
-        if (cells.isEmpty()) return;
+        if (cells.isEmpty()) return false;
 
         Collections.sort(cells, new Comparator<BlockPos>() {
             @Override
@@ -189,13 +219,10 @@ public class AutoPlace {
         });
 
         for (BlockPos c : cells) {
-            if (placeAt(mc, p, stack, c)) {
-                placeCooldown = RAND.nextInt(2);
-                return;
-            }
+            if (placeAt(mc, p, stack, c)) return true;
         }
 
-        if (!SAFETY_NET) return;
+        if (!SAFETY_NET) return false;
 
         for (BlockPos c : cells) {
             for (EnumFacing dir : SIDES) {
@@ -203,11 +230,11 @@ public class AutoPlace {
                 if (!mc.theWorld.isAirBlock(helper)) continue;
                 if (placeAt(mc, p, stack, helper)) {
                     placeAt(mc, p, stack, c);
-                    placeCooldown = 1 + RAND.nextInt(2);
-                    return;
+                    return true;
                 }
             }
         }
+        return false;
     }
 
     private static double sq(double v) {
@@ -233,7 +260,6 @@ public class AutoPlace {
         double hy = block.getY() + 0.5 + side.getFrontOffsetY() * 0.5;
         double hz = block.getZ() + 0.5 + side.getFrontOffsetZ() * 0.5;
 
-        // Случайное смещение — выглядит как клик человека
         double ox = (RAND.nextDouble() - 0.5) * 0.55;
         double oy = (RAND.nextDouble() - 0.5) * 0.55;
         double oz = (RAND.nextDouble() - 0.5) * 0.55;
