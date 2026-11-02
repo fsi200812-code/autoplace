@@ -24,41 +24,54 @@ import org.lwjgl.input.Mouse;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
-import java.util.LinkedList;
 import java.util.List;
-import java.util.Queue;
-import java.util.Random;
 
 /**
- * AutoPlace 2.5 — Speed Telly helper
- * Чаще ставит и лучше попадает в нужные места (розовые блоки)
+ * AutoPlace 2.1
+ *
+ * EDGE_MODE (default): you stand on a block and run/jump toward its edge. On the
+ * LAST tick you are still over that block, the mod places the next block AHEAD
+ * of you against the block you stand on, so you push off from the edge.
+ * It looks further along the line: blocks that already exist (the ones you placed
+ * yourself) are skipped, and the first empty cell after them gets the block.
+ *
+ * LANDING_MODE (off by default): the old behaviour, places the block under your
+ * feet on the last falling tick before landing.
+ *
+ * Both only work while RMB is held or clicked fast (10+ CPS). Toggle key: R.
+ * Uses named MCP mappings (no SRG names).
  */
-@Mod(modid = AutoPlace.MODID, version = "2.5", name = "AutoPlace", clientSideOnly = true, acceptedMinecraftVersions = "[1.8.9]")
+@Mod(modid = AutoPlace.MODID, version = "2.1", name = "AutoPlace", clientSideOnly = true, acceptedMinecraftVersions = "[1.8.9]")
 public class AutoPlace {
     public static final String MODID = "autoplace";
 
-    private static final int RMB_GRACE_TICKS = 4;
+    /** RMB counts as active if held now or clicked within this many ticks (3 ticks = 150 ms, covers 10+ CPS). */
+    private static final int RMB_GRACE_TICKS = 3;
+
+    /** Place the next block ahead while standing on a block, on the last tick before leaving its edge. */
     private static final boolean EDGE_MODE = true;
-    private static final boolean LANDING_MODE = true;   // включил сильнее
+
+    /** How many cells ahead of the block you stand on the mod may reach (existing blocks are skipped). */
+    private static final int AHEAD_MAX = 3;
+
+    /** Old mode: place under the feet on the last falling tick before landing. */
+    private static final boolean LANDING_MODE = false;
+
+    /** true = run at the start of the tick (a few ms later), false = at the end of the previous tick. */
     private static final boolean LATE_PHASE = true;
+
+    /** Landing mode only: try every cell under the feet footprint and chain one helper block. */
     private static final boolean SAFETY_NET = true;
 
-    private static final int MIN_CPS = 10;
-    private static final int MAX_CPS = 50;
-
     private static final EnumFacing[] SIDES = {EnumFacing.NORTH, EnumFacing.SOUTH, EnumFacing.EAST, EnumFacing.WEST};
-    private static final Random RAND = new Random();
 
     private static final KeyBinding TOGGLE = new KeyBinding("Toggle AutoPlace", Keyboard.KEY_R, "AutoPlace");
     private boolean enabled = false;
     private int tickCounter = 0;
     private int lastRmbTick = -1000;
-    private int placeCooldown = 0;
     private boolean havePos = false;
     private double lastX = 0;
     private double lastZ = 0;
-
-    private final Queue<Long> clickTimes = new LinkedList<Long>();
 
     @Mod.EventHandler
     public void init(FMLInitializationEvent e) {
@@ -66,24 +79,12 @@ public class AutoPlace {
         MinecraftForge.EVENT_BUS.register(this);
     }
 
+    /** Catches every physical right click, even very short ones that fall between ticks. */
     @SubscribeEvent
     public void onMouse(MouseEvent e) {
         if (e.button == 1 && e.buttonstate) {
             lastRmbTick = tickCounter;
-            long now = System.currentTimeMillis();
-            clickTimes.add(now);
-            while (!clickTimes.isEmpty() && now - clickTimes.peek() > 1000) {
-                clickTimes.poll();
-            }
         }
-    }
-
-    private int getCurrentCPS() {
-        long now = System.currentTimeMillis();
-        while (!clickTimes.isEmpty() && now - clickTimes.peek() > 1000) {
-            clickTimes.poll();
-        }
-        return clickTimes.size();
     }
 
     @SubscribeEvent
@@ -93,17 +94,17 @@ public class AutoPlace {
         Minecraft mc = Minecraft.getMinecraft();
         if (mc.thePlayer == null || mc.theWorld == null) {
             havePos = false;
-            placeCooldown = 0;
             return;
         }
         EntityPlayerSP p = mc.thePlayer;
 
+        // Movement of the previous tick (used to predict the next one).
         double dX = 0;
         double dZ = 0;
         if (havePos) {
             dX = p.posX - lastX;
             dZ = p.posZ - lastZ;
-            if (Math.abs(dX) > 1.8 || Math.abs(dZ) > 1.8) {
+            if (Math.abs(dX) > 1.5 || Math.abs(dZ) > 1.5) { // teleport / respawn
                 dX = 0;
                 dZ = 0;
             }
@@ -123,45 +124,23 @@ public class AutoPlace {
         }
 
         if (!enabled || mc.currentScreen != null) return;
+
+        // Only while RMB is held / being spam clicked.
         if (tickCounter - lastRmbTick > RMB_GRACE_TICKS) return;
-
-        int cps = getCurrentCPS();
-        if (cps < MIN_CPS || cps > MAX_CPS) return;
-
-        if (placeCooldown > 0) {
-            placeCooldown--;
-            return;
-        }
 
         ItemStack stack = p.getHeldItem();
         if (stack == null || !(stack.getItem() instanceof ItemBlock)) return;
 
-        boolean placed = false;
-
-        // Сначала пробуем landing (для розовых блоков, на которые падаешь)
-        if (LANDING_MODE && !p.onGround) {
-            placed = landingPlace(mc, p, stack);
-        }
-
-        // Потом edge
-        if (!placed && EDGE_MODE) {
-            placed = edgePlace(mc, p, stack, dX, dZ);
-        }
-
-        if (placed) {
-            // Очень маленький кулдаун — ставит чаще
-            placeCooldown = RAND.nextInt(2); // 0 или 1 тик
+        if (p.onGround) {
+            if (EDGE_MODE) edgePlace(mc, p, stack, dX, dZ);
+        } else if (LANDING_MODE) {
+            landingPlace(mc, p, stack);
         }
     }
 
-    private boolean edgePlace(Minecraft mc, EntityPlayerSP p, ItemStack stack, double dX, double dZ) {
-        // Берём направление даже если движение небольшое
-        if (Math.abs(dX) < 0.02D && Math.abs(dZ) < 0.02D) {
-            // Если почти стоим — пробуем по взгляду
-            float yaw = p.rotationYaw;
-            dX = -MathHelper.sin(yaw * 0.017453292F);
-            dZ = MathHelper.cos(yaw * 0.017453292F);
-        }
+    /** Standing on a block, last tick before the player centre leaves it: place the next block ahead. */
+    private void edgePlace(Minecraft mc, EntityPlayerSP p, ItemStack stack, double dX, double dZ) {
+        if (Math.abs(dX) < 0.05D && Math.abs(dZ) < 0.05D) return; // standing still / too slow
 
         int dirX = 0;
         int dirZ = 0;
@@ -170,13 +149,13 @@ public class AutoPlace {
 
         int cx = MathHelper.floor_double(p.posX);
         int cz = MathHelper.floor_double(p.posZ);
+        int nx = MathHelper.floor_double(p.posX + dX);
+        int nz = MathHelper.floor_double(p.posZ + dZ);
+        if (nx == cx && nz == cz) return; // next tick we are still over this block, not the last tick yet
 
-        int layerY = MathHelper.floor_double(p.getEntityBoundingBox().minY - 0.01D);
+        int layerY = MathHelper.floor_double(p.getEntityBoundingBox().minY - 0.001D);
         BlockPos support = new BlockPos(cx, layerY, cz);
-        BlockPos target = new BlockPos(cx + dirX, layerY, cz + dirZ);
-
-        if (!isSolid(mc, support)) return false;
-        if (!mc.theWorld.isAirBlock(target)) return false;
+        if (!isSolid(mc, support)) return;
 
         EnumFacing side;
         if (dirX > 0) side = EnumFacing.EAST;
@@ -184,37 +163,46 @@ public class AutoPlace {
         else if (dirZ > 0) side = EnumFacing.SOUTH;
         else side = EnumFacing.NORTH;
 
-        return clickFace(mc, p, stack, support, side);
+        // Walk along the line: skip cells that are already filled, place into the first empty one.
+        for (int i = 1; i <= AHEAD_MAX; i++) {
+            BlockPos cell = new BlockPos(cx + dirX * i, layerY, cz + dirZ * i);
+            if (!mc.theWorld.isAirBlock(cell)) continue;
+
+            BlockPos prev = new BlockPos(cx + dirX * (i - 1), layerY, cz + dirZ * (i - 1));
+            if (!isSolid(mc, prev)) return;
+
+            clickFace(mc, p, stack, prev, side);
+            return;
+        }
     }
 
-    private boolean landingPlace(Minecraft mc, EntityPlayerSP p, ItemStack stack) {
-        if (p.motionY > 0.1D) return false; // только когда падаем или почти
+    /** Old behaviour: last falling tick before landing, block under the feet. */
+    private void landingPlace(Minecraft mc, EntityPlayerSP p, ItemStack stack) {
+        if (p.motionY >= 0.0D) return;
 
         AxisAlignedBB bb = p.getEntityBoundingBox();
-        int layerY = MathHelper.floor_double(bb.minY - 0.2D);
+        double minY = bb.minY;
+        double nextMinY = minY + p.motionY;
+        int top = MathHelper.floor_double(minY);
+        if (nextMinY > top) return;
+
+        int layerY = top - 1;
 
         final double px = p.posX;
         final double pz = p.posZ;
-
         List<BlockPos> cells = new ArrayList<BlockPos>();
-        int range = 1;
-        int x0 = MathHelper.floor_double(px) - range;
-        int x1 = MathHelper.floor_double(px) + range;
-        int z0 = MathHelper.floor_double(pz) - range;
-        int z1 = MathHelper.floor_double(pz) + range;
-
+        int x0 = MathHelper.floor_double(SAFETY_NET ? bb.minX : px);
+        int x1 = MathHelper.floor_double(SAFETY_NET ? bb.maxX : px);
+        int z0 = MathHelper.floor_double(SAFETY_NET ? bb.minZ : pz);
+        int z1 = MathHelper.floor_double(SAFETY_NET ? bb.maxZ : pz);
         for (int x = x0; x <= x1; x++) {
             for (int z = z0; z <= z1; z++) {
                 BlockPos c = new BlockPos(x, layerY, z);
-                if (mc.theWorld.isAirBlock(c)) {
-                    cells.add(c);
-                }
+                if (mc.theWorld.isAirBlock(c)) cells.add(c);
             }
         }
+        if (cells.isEmpty()) return;
 
-        if (cells.isEmpty()) return false;
-
-        // Сортируем по близости к игроку
         Collections.sort(cells, new Comparator<BlockPos>() {
             @Override
             public int compare(BlockPos a, BlockPos b) {
@@ -225,10 +213,21 @@ public class AutoPlace {
         });
 
         for (BlockPos c : cells) {
-            if (placeAt(mc, p, stack, c)) return true;
+            if (placeAt(mc, p, stack, c)) return;
         }
 
-        return false;
+        if (!SAFETY_NET) return;
+
+        for (BlockPos c : cells) {
+            for (EnumFacing dir : SIDES) {
+                BlockPos helper = c.offset(dir);
+                if (!mc.theWorld.isAirBlock(helper)) continue;
+                if (placeAt(mc, p, stack, helper)) {
+                    placeAt(mc, p, stack, c);
+                    return;
+                }
+            }
+        }
     }
 
     private static double sq(double v) {
@@ -239,6 +238,7 @@ public class AutoPlace {
         return mc.theWorld.getBlockState(pos).getBlock().getMaterial().isSolid();
     }
 
+    /** Places a block into the empty cell against any solid neighbour. Returns true if the click was accepted. */
     private boolean placeAt(Minecraft mc, EntityPlayerSP p, ItemStack stack, BlockPos cell) {
         for (EnumFacing dir : EnumFacing.values()) {
             if (dir == EnumFacing.UP) continue;
@@ -249,33 +249,17 @@ public class AutoPlace {
         return false;
     }
 
+    /** Right-clicks the given face of a block (centre of the face). */
     private boolean clickFace(Minecraft mc, EntityPlayerSP p, ItemStack stack, BlockPos block, EnumFacing side) {
-        double hx = block.getX() + 0.5 + side.getFrontOffsetX() * 0.5;
-        double hy = block.getY() + 0.5 + side.getFrontOffsetY() * 0.5;
-        double hz = block.getZ() + 0.5 + side.getFrontOffsetZ() * 0.5;
-
-        // Меньше рандома — точнее попадает
-        double ox = (RAND.nextDouble() - 0.5) * 0.3;
-        double oy = (RAND.nextDouble() - 0.5) * 0.3;
-        double oz = (RAND.nextDouble() - 0.5) * 0.3;
-
-        if (side.getFrontOffsetX() != 0) {
-            hy += oy;
-            hz += oz;
-        } else if (side.getFrontOffsetY() != 0) {
-            hx += ox;
-            hz += oz;
-        } else {
-            hx += ox;
-            hy += oy;
-        }
-
-        Vec3 hit = new Vec3(hx, hy, hz);
-
+        Vec3 hit = new Vec3(
+                block.getX() + 0.5 + side.getFrontOffsetX() * 0.5,
+                block.getY() + 0.5 + side.getFrontOffsetY() * 0.5,
+                block.getZ() + 0.5 + side.getFrontOffsetZ() * 0.5);
         if (mc.playerController.onPlayerRightClick(p, mc.theWorld, stack, block, side, hit)) {
             p.swingItem();
             return true;
         }
         return false;
     }
-    }
+     }
+        
