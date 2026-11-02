@@ -27,7 +27,7 @@ import java.util.Comparator;
 import java.util.List;
 
 /**
- * AutoPlace 2.1
+ * AutoPlace 2.2
  *
  * EDGE_MODE (default): you stand on a block and run/jump toward its edge. On the
  * LAST tick you are still over that block, the mod places the next block AHEAD
@@ -41,7 +41,7 @@ import java.util.List;
  * Both only work while RMB is held or clicked fast (10+ CPS). Toggle key: R.
  * Uses named MCP mappings (no SRG names).
  */
-@Mod(modid = AutoPlace.MODID, version = "2.1", name = "AutoPlace", clientSideOnly = true, acceptedMinecraftVersions = "[1.8.9]")
+@Mod(modid = AutoPlace.MODID, version = "2.2", name = "AutoPlace", clientSideOnly = true, acceptedMinecraftVersions = "[1.8.9]")
 public class AutoPlace {
     public static final String MODID = "autoplace";
 
@@ -53,6 +53,13 @@ public class AutoPlace {
 
     /** How many cells ahead of the block you stand on the mod may reach (existing blocks are skipped). */
     private static final int AHEAD_MAX = 3;
+
+    /**
+     * How many ticks AFTER the last tick over the block the block is placed (1 tick = 50 ms).
+     * 0 = on the last tick over the block, 1 = one tick later (default), 2 = two ticks later.
+     * The centre of the player is then already past the edge, while the feet still touch the block.
+     */
+    private static final int EDGE_DELAY_TICKS = 1;
 
     /** Old mode: place under the feet on the last falling tick before landing. */
     private static final boolean LANDING_MODE = false;
@@ -72,6 +79,11 @@ public class AutoPlace {
     private boolean havePos = false;
     private double lastX = 0;
     private double lastZ = 0;
+
+    // pending edge placement (when EDGE_DELAY_TICKS > 0)
+    private boolean pending = false;
+    private int pendingTicks = 0;
+    private int pendCx, pendCz, pendLayer, pendDirX, pendDirZ;
 
     @Mod.EventHandler
     public void init(FMLInitializationEvent e) {
@@ -123,23 +135,42 @@ public class AutoPlace {
             p.addChatMessage(new ChatComponentText("AutoPlace: " + (enabled ? "ON" : "OFF")));
         }
 
-        if (!enabled || mc.currentScreen != null) return;
+        if (!enabled || mc.currentScreen != null) {
+            pending = false;
+            return;
+        }
 
         // Only while RMB is held / being spam clicked.
-        if (tickCounter - lastRmbTick > RMB_GRACE_TICKS) return;
+        if (tickCounter - lastRmbTick > RMB_GRACE_TICKS) {
+            pending = false;
+            return;
+        }
 
         ItemStack stack = p.getHeldItem();
-        if (stack == null || !(stack.getItem() instanceof ItemBlock)) return;
+        if (stack == null || !(stack.getItem() instanceof ItemBlock)) {
+            pending = false;
+            return;
+        }
 
-        if (p.onGround) {
-            if (EDGE_MODE) edgePlace(mc, p, stack, dX, dZ);
-        } else if (LANDING_MODE) {
+        if (EDGE_MODE) {
+            if (pending) {
+                pendingTicks--;
+                if (pendingTicks <= 0) {
+                    pending = false;
+                    edgePlace(mc, p, stack);
+                }
+            } else if (p.onGround) {
+                edgeArm(mc, p, stack, dX, dZ);
+            }
+        }
+
+        if (!p.onGround && LANDING_MODE) {
             landingPlace(mc, p, stack);
         }
     }
 
-    /** Standing on a block, last tick before the player centre leaves it: place the next block ahead. */
-    private void edgePlace(Minecraft mc, EntityPlayerSP p, ItemStack stack, double dX, double dZ) {
+    /** Standing on a block, last tick before the player centre leaves it: remember the block and the direction. */
+    private void edgeArm(Minecraft mc, EntityPlayerSP p, ItemStack stack, double dX, double dZ) {
         if (Math.abs(dX) < 0.05D && Math.abs(dZ) < 0.05D) return; // standing still / too slow
 
         int dirX = 0;
@@ -153,22 +184,36 @@ public class AutoPlace {
         int nz = MathHelper.floor_double(p.posZ + dZ);
         if (nx == cx && nz == cz) return; // next tick we are still over this block, not the last tick yet
 
-        int layerY = MathHelper.floor_double(p.getEntityBoundingBox().minY - 0.001D);
-        BlockPos support = new BlockPos(cx, layerY, cz);
+        pendCx = cx;
+        pendCz = cz;
+        pendDirX = dirX;
+        pendDirZ = dirZ;
+        pendLayer = MathHelper.floor_double(p.getEntityBoundingBox().minY - 0.001D);
+
+        if (EDGE_DELAY_TICKS <= 0) {
+            edgePlace(mc, p, stack);
+        } else {
+            pending = true;
+            pendingTicks = EDGE_DELAY_TICKS;
+        }
+    }
+
+    /** Places the block ahead of the remembered support block, skipping cells that are already filled. */
+    private void edgePlace(Minecraft mc, EntityPlayerSP p, ItemStack stack) {
+        BlockPos support = new BlockPos(pendCx, pendLayer, pendCz);
         if (!isSolid(mc, support)) return;
 
         EnumFacing side;
-        if (dirX > 0) side = EnumFacing.EAST;
-        else if (dirX < 0) side = EnumFacing.WEST;
-        else if (dirZ > 0) side = EnumFacing.SOUTH;
+        if (pendDirX > 0) side = EnumFacing.EAST;
+        else if (pendDirX < 0) side = EnumFacing.WEST;
+        else if (pendDirZ > 0) side = EnumFacing.SOUTH;
         else side = EnumFacing.NORTH;
 
-        // Walk along the line: skip cells that are already filled, place into the first empty one.
         for (int i = 1; i <= AHEAD_MAX; i++) {
-            BlockPos cell = new BlockPos(cx + dirX * i, layerY, cz + dirZ * i);
+            BlockPos cell = new BlockPos(pendCx + pendDirX * i, pendLayer, pendCz + pendDirZ * i);
             if (!mc.theWorld.isAirBlock(cell)) continue;
 
-            BlockPos prev = new BlockPos(cx + dirX * (i - 1), layerY, cz + dirZ * (i - 1));
+            BlockPos prev = new BlockPos(pendCx + pendDirX * (i - 1), pendLayer, pendCz + pendDirZ * (i - 1));
             if (!isSolid(mc, prev)) return;
 
             clickFace(mc, p, stack, prev, side);
@@ -261,5 +306,5 @@ public class AutoPlace {
         }
         return false;
     }
-     }
-        
+    }
+    
