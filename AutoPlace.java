@@ -30,16 +30,16 @@ import java.util.Queue;
 import java.util.Random;
 
 /**
- * AutoPlace 2.4 — Speed Telly helper
- * Работает только при CPS от 10 до 50.
+ * AutoPlace 2.5 — Speed Telly helper
+ * Чаще ставит и лучше попадает в нужные места (розовые блоки)
  */
-@Mod(modid = AutoPlace.MODID, version = "2.4", name = "AutoPlace", clientSideOnly = true, acceptedMinecraftVersions = "[1.8.9]")
+@Mod(modid = AutoPlace.MODID, version = "2.5", name = "AutoPlace", clientSideOnly = true, acceptedMinecraftVersions = "[1.8.9]")
 public class AutoPlace {
     public static final String MODID = "autoplace";
 
-    private static final int RMB_GRACE_TICKS = 3;
+    private static final int RMB_GRACE_TICKS = 4;
     private static final boolean EDGE_MODE = true;
-    private static final boolean LANDING_MODE = false;
+    private static final boolean LANDING_MODE = true;   // включил сильнее
     private static final boolean LATE_PHASE = true;
     private static final boolean SAFETY_NET = true;
 
@@ -103,7 +103,7 @@ public class AutoPlace {
         if (havePos) {
             dX = p.posX - lastX;
             dZ = p.posZ - lastZ;
-            if (Math.abs(dX) > 1.5 || Math.abs(dZ) > 1.5) {
+            if (Math.abs(dX) > 1.8 || Math.abs(dZ) > 1.8) {
                 dX = 0;
                 dZ = 0;
             }
@@ -125,7 +125,6 @@ public class AutoPlace {
         if (!enabled || mc.currentScreen != null) return;
         if (tickCounter - lastRmbTick > RMB_GRACE_TICKS) return;
 
-        // Работаем ТОЛЬКО при CPS от 10 до 50
         int cps = getCurrentCPS();
         if (cps < MIN_CPS || cps > MAX_CPS) return;
 
@@ -139,21 +138,30 @@ public class AutoPlace {
 
         boolean placed = false;
 
-        if (p.onGround) {
-            if (EDGE_MODE) {
-                placed = edgePlace(mc, p, stack, dX, dZ);
-            }
-        } else if (LANDING_MODE) {
+        // Сначала пробуем landing (для розовых блоков, на которые падаешь)
+        if (LANDING_MODE && !p.onGround) {
             placed = landingPlace(mc, p, stack);
         }
 
+        // Потом edge
+        if (!placed && EDGE_MODE) {
+            placed = edgePlace(mc, p, stack, dX, dZ);
+        }
+
         if (placed) {
-            placeCooldown = 1 + RAND.nextInt(2); // небольшой кулдаун
+            // Очень маленький кулдаун — ставит чаще
+            placeCooldown = RAND.nextInt(2); // 0 или 1 тик
         }
     }
 
     private boolean edgePlace(Minecraft mc, EntityPlayerSP p, ItemStack stack, double dX, double dZ) {
-        if (Math.abs(dX) < 0.05D && Math.abs(dZ) < 0.05D) return false;
+        // Берём направление даже если движение небольшое
+        if (Math.abs(dX) < 0.02D && Math.abs(dZ) < 0.02D) {
+            // Если почти стоим — пробуем по взгляду
+            float yaw = p.rotationYaw;
+            dX = -MathHelper.sin(yaw * 0.017453292F);
+            dZ = MathHelper.cos(yaw * 0.017453292F);
+        }
 
         int dirX = 0;
         int dirZ = 0;
@@ -162,12 +170,8 @@ public class AutoPlace {
 
         int cx = MathHelper.floor_double(p.posX);
         int cz = MathHelper.floor_double(p.posZ);
-        int nx = MathHelper.floor_double(p.posX + dX);
-        int nz = MathHelper.floor_double(p.posZ + dZ);
 
-        if (nx == cx && nz == cz) return false;
-
-        int layerY = MathHelper.floor_double(p.getEntityBoundingBox().minY - 0.001D);
+        int layerY = MathHelper.floor_double(p.getEntityBoundingBox().minY - 0.01D);
         BlockPos support = new BlockPos(cx, layerY, cz);
         BlockPos target = new BlockPos(cx + dirX, layerY, cz + dirZ);
 
@@ -184,31 +188,33 @@ public class AutoPlace {
     }
 
     private boolean landingPlace(Minecraft mc, EntityPlayerSP p, ItemStack stack) {
-        if (p.motionY >= 0.0D) return false;
+        if (p.motionY > 0.1D) return false; // только когда падаем или почти
 
         AxisAlignedBB bb = p.getEntityBoundingBox();
-        double minY = bb.minY;
-        double nextMinY = minY + p.motionY;
-        int top = MathHelper.floor_double(minY);
-        if (nextMinY > top) return false;
-
-        int layerY = top - 1;
+        int layerY = MathHelper.floor_double(bb.minY - 0.2D);
 
         final double px = p.posX;
         final double pz = p.posZ;
+
         List<BlockPos> cells = new ArrayList<BlockPos>();
-        int x0 = MathHelper.floor_double(SAFETY_NET ? bb.minX : px);
-        int x1 = MathHelper.floor_double(SAFETY_NET ? bb.maxX : px);
-        int z0 = MathHelper.floor_double(SAFETY_NET ? bb.minZ : pz);
-        int z1 = MathHelper.floor_double(SAFETY_NET ? bb.maxZ : pz);
+        int range = 1;
+        int x0 = MathHelper.floor_double(px) - range;
+        int x1 = MathHelper.floor_double(px) + range;
+        int z0 = MathHelper.floor_double(pz) - range;
+        int z1 = MathHelper.floor_double(pz) + range;
+
         for (int x = x0; x <= x1; x++) {
             for (int z = z0; z <= z1; z++) {
                 BlockPos c = new BlockPos(x, layerY, z);
-                if (mc.theWorld.isAirBlock(c)) cells.add(c);
+                if (mc.theWorld.isAirBlock(c)) {
+                    cells.add(c);
+                }
             }
         }
+
         if (cells.isEmpty()) return false;
 
+        // Сортируем по близости к игроку
         Collections.sort(cells, new Comparator<BlockPos>() {
             @Override
             public int compare(BlockPos a, BlockPos b) {
@@ -222,18 +228,6 @@ public class AutoPlace {
             if (placeAt(mc, p, stack, c)) return true;
         }
 
-        if (!SAFETY_NET) return false;
-
-        for (BlockPos c : cells) {
-            for (EnumFacing dir : SIDES) {
-                BlockPos helper = c.offset(dir);
-                if (!mc.theWorld.isAirBlock(helper)) continue;
-                if (placeAt(mc, p, stack, helper)) {
-                    placeAt(mc, p, stack, c);
-                    return true;
-                }
-            }
-        }
         return false;
     }
 
@@ -260,9 +254,10 @@ public class AutoPlace {
         double hy = block.getY() + 0.5 + side.getFrontOffsetY() * 0.5;
         double hz = block.getZ() + 0.5 + side.getFrontOffsetZ() * 0.5;
 
-        double ox = (RAND.nextDouble() - 0.5) * 0.55;
-        double oy = (RAND.nextDouble() - 0.5) * 0.55;
-        double oz = (RAND.nextDouble() - 0.5) * 0.55;
+        // Меньше рандома — точнее попадает
+        double ox = (RAND.nextDouble() - 0.5) * 0.3;
+        double oy = (RAND.nextDouble() - 0.5) * 0.3;
+        double oz = (RAND.nextDouble() - 0.5) * 0.3;
 
         if (side.getFrontOffsetX() != 0) {
             hy += oy;
@@ -283,4 +278,4 @@ public class AutoPlace {
         }
         return false;
     }
-            }
+    }
